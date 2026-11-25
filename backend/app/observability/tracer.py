@@ -27,7 +27,13 @@ class Tracer:
     def emit(self, record: dict) -> bool:
         if not self.enabled:
             return False
-        if not self.collector.put_nowait(record):
+        from app.observability.capture import resolve_mode
+        from app.observability.redaction import redact_record
+
+        mode = resolve_mode(self.capture_mode, degraded=self.collector.degraded)
+        if mode == "OFF":
+            return False
+        if not self.collector.put_nowait(redact_record(record, mode)):
             from app.observability.metrics import event_dropped
 
             event_dropped.labels(reason="queue_full").inc()
