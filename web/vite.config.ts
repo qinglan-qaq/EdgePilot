@@ -30,6 +30,7 @@ export default defineConfig(({ mode }) => {
       globals: true,
       include: ['tests/**/*.spec.ts'],
       restoreMocks: true,
+      setupFiles: ['./tests/setup.ts'],
     },
   }
 })

@@ -8,6 +8,7 @@ import Forbidden from '@/views/Forbidden.vue'
 import Login from '@/views/Login.vue'
 import ModulePending from '@/views/ModulePending.vue'
 import NotFound from '@/views/NotFound.vue'
+import WorkflowEditor from '@/views/WorkflowEditor.vue'
 import Workflows from '@/views/Workflows.vue'
 
 import { canAccessRoles } from './access'
@@ -86,12 +87,11 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'workflows/:id',
         name: 'workflow-editor',
-        component: ModulePending,
+        component: WorkflowEditor,
         meta: {
           title: '工作流编辑器',
           roles: ALL_ROLES,
           activeMenu: '/workflows',
-          description: 'Vue Flow 编辑器将在此接入真实草稿与发布流程。',
         },
       },
       {

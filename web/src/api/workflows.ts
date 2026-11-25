@@ -40,9 +40,12 @@ export interface WorkflowNodeDsl {
   [key: string]: unknown
 }
 
-/** 工作流 DSL 中的单条边。 */
+/** 工作流 DSL 中的单条边；后端读取 from/to，source/target 仅用于兼容旧草稿。 */
 export interface WorkflowEdgeDsl {
   id?: string
+  from?: string
+  to?: string
+  when?: string
   source?: string
   target?: string
   [key: string]: unknown
