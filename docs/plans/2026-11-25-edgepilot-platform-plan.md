@@ -2061,6 +2061,18 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - **测试**：`test_workflow_engine.py` 12 条（审批暂停/恢复、拒绝、条件分支、重试与退避、二次调用不重复执行、取消、工具幂等键、监控故障隔离、trace 只落库一次、原子租约 busy/过期恢复、不可重试工具、list 输出经 API）、`test_workflow_timeout.py` 4 条（节点超时、未到期不处理、审批超时审计、stale 发现）、`test_workflow_approval_api.py` 4 条（通过/审计/入队、非审批人与 admin 403、拒绝与跳过、跨租户/404/非等待 409）、`test_worker_config.py` 4 条（路由/beat、任务名、关闭入队、入队异常吞掉）、`test_workflow_heartbeat.py` 1 条（独立会话周期续租）。新增 25 条，全量 **390 passed**；无迁移。
 - **有意保留**：不接真实 broker 做端到端测试（配置/任务单测覆盖）；运行详情实时推送留到 Task 25；僵尸回收暂无重试次数上限；心跳续租仅在 worker 路径启用；`scheduler` 仅随 `app` profile 启动。
 
+### Task 23 代码级展开（已实现）
+
+- **工程与依赖**：新建 `web/`，Vue 3.5.46 + TypeScript 5.9.3 + Vite 8.3.8 + Element Plus 2.14.8 + Pinia 4.1.0 + vue-router 4.6.5 + axios 1.21.1；Vitest 5.1.2 + jsdom 29.1.1 + @vue/test-utils 2.6.0。jsdom 固定 29.x 是因为 30/31 要求 Node ≥22.22.2，而当前环境为 22.20.0。`web/dist`、`web/node_modules` 由根 `.gitignore` 排除，仅提交 `.env.example`，不提交真实 `.env`。
+- **文件分工**：`src/api/{tokens,http}.ts`、`src/stores/auth.ts`、`src/router/{index,access,redirect}.ts`、`src/layouts/AppLayout.vue`、`src/views/{Login,ModulePending,Forbidden,NotFound}.vue`、`src/components/common/AsyncState.vue`、`src/main.ts`、`src/App.vue`、`src/styles/main.css`。
+- **令牌与 HTTP**：令牌只持久化在 localStorage（`edgepilot.access_token` / `edgepilot.refresh_token`），用户资料仅存内存；请求拦截器注入 Bearer；响应拦截器统一解包 `{code,message,data,trace_id}`，非 0 或 HTTP 错误转为 `ApiError(status,code,message,traceId)`，网络错误 status=0。`createHttpClient(deps)` 可注入令牌读取、刷新、回调与 baseURL，便于单测。
+- **401 刷新**：登录/刷新接口自身的 401 不参与刷新；每个请求 `_retry` 最多重放一次；多个并发 401 共享同一个 in-flight refresh Promise，只刷新一次；刷新成功写回新令牌并重放，失败只调用一次 `onUnauthorized` 并以 401 拒绝所有等待者。若迟到的 401 携带旧令牌且当前令牌已更新，直接重放而不再刷新。
+- **认证仓库**：`bootstrap()` 并发安全且在 finally 置 `initialized`；有令牌时拉 `/auth/me` 恢复角色，失败清理本地态；`login()` 先落令牌再拉 `/me`，半截失败会回滚；`logout()` 后端失败也完成本地清理；`reset()` 供未授权事件使用。默认 `onUnauthorized` 清令牌并派发 `auth:unauthorized`，`main.ts` 监听后重置 store 并带安全 redirect 跳登录。
+- **路由与权限**：`/login` 公共；布局内 `/`、`/agents`、`/workflows`、`/runs`、`/nodes`、`/devices`、`/events`、`/knowledge` 允许 viewer/operator/admin，`/settings` 仅 admin，另有 `/403` 与 catch-all 404。守卫首次导航 await `bootstrap`，未登录跳 `/login?redirect=...`，已登录访问登录页回 `/`，角色不符去 `/403`；`sanitizeRedirect` 仅接受以单个 `/` 开头的站内路径。
+- **界面**：Element Plus 容器布局，侧边导航按 `meta.roles` 过滤，头部展示角色标签、用户名与退出；登录页含邮箱格式/必填校验、密码可见切换、提交 loading、后端错误提示与 Enter 提交；`AsyncState` 提供 loading/error/empty/content 四分支与 retry 事件。未实现模块统一使用 `ModulePending`，明确标注“待接入”，不展示任何模拟统计或占位数据。
+- **测试与构建**：`tests/test_http_interceptor.spec.ts` 7 条（Bearer、信封解包、并发 401 单次刷新并重放、刷新失败单次通知且不重试、登录 401 不刷新、无 refresh token、403/409 保留 message/trace_id）；`tests/test_async_state.spec.ts` 4 条（loading/error+retry/empty/默认插槽）。`npm run test` 11 passed；`npm run build`（vue-tsc --noEmit + vite build）成功。
+- **有意保留**：尚未做浏览器 E2E 与真实后端联调（留到 P6 退出验收）；Element Plus 全量引入导致主包约 1.1 MB（后续可改按需引入/拆包）；WebSocket/SSE 与运行详情实时刷新留到 Task 25；前端静态资源的生产容器托管留到 P7 部署任务。
+
 ---
 
 ## P7 分析、部署与可靠性（契约级）
