@@ -45,6 +45,7 @@ def run_to_out(ctx: RunContext) -> WorkflowRunOut:
         output=run.output,
         error=run.error,
         trace_id=run.trace_id,
+        trace_available=ctx.trace_available,
         root_span_id=run.root_span_id,
         created_at=run.created_at,
         started_at=run.started_at,
@@ -82,6 +83,7 @@ async def list_runs(
                 workflow_version=row.workflow_version,
                 dsl={},
                 nodes=[],
+                trace_available=row.trace_available,
             )
         )
         for row in rows

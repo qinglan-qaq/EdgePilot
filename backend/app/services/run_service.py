@@ -89,6 +89,7 @@ class RunContext:
     workflow_version: int
     dsl: dict
     nodes: list[WorkflowNodeRun]
+    trace_available: bool = False
 
 
 @dataclass
@@ -97,6 +98,7 @@ class RunListRow:
     workflow_id: int
     workflow_name: str
     workflow_version: int
+    trace_available: bool = False
 
 
 def order_node_runs(
@@ -214,12 +216,15 @@ class RunService:
             workflow_id=workflow_id,
             status=status,
         )
+        trace_ids = {run.trace_id for run, _, _, _ in rows if run.trace_id}
+        available = await self.repo.existing_trace_ids(tenant_id, trace_ids)
         return [
             RunListRow(
                 run=run,
                 workflow_name=name,
                 workflow_id=wf_id,
                 workflow_version=version,
+                trace_available=run.trace_id in available if run.trace_id else False,
             )
             for run, name, wf_id, version in rows
         ], total
@@ -240,6 +245,10 @@ class RunService:
             raise NotFound("运行所属工作流不存在")
 
         nodes = await self.repo.list_node_runs(tenant_id, run.id)
+        trace_available = bool(
+            run.trace_id
+            and await self.repo.existing_trace_ids(tenant_id, {run.trace_id})
+        )
         return RunContext(
             run=run,
             workflow_id=workflow.id,
@@ -247,6 +256,7 @@ class RunService:
             workflow_version=version.version,
             dsl=version.dsl,
             nodes=order_node_runs(nodes, version.dsl),
+            trace_available=trace_available,
         )
 
     @staticmethod

@@ -129,6 +129,7 @@ class WorkflowRunOut(BaseModel):
     output: Any | None
     error: str | None
     trace_id: str | None
+    trace_available: bool = False
     root_span_id: str | None = None
     created_at: datetime | None = None
     started_at: datetime | None = None

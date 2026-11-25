@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import select
 
@@ -15,6 +17,7 @@ from app.models.agent import Agent
 from app.models.audit import AuditLog
 from app.models.run import WorkflowNodeRun, WorkflowRun
 from app.models.user import User
+from app.observability.models.trace import Trace
 from tests.conftest import (
     PASSWORD,
     TENANT,
@@ -453,6 +456,7 @@ async def test_run_creation_persists_pending_rows_without_execution(
 
     assert run["status"] == "pending"
     assert run["trace_id"] is None
+    assert run["trace_available"] is False
     assert run["started_at"] is None
     assert run["finished_at"] is None
     assert run["workflow_id"] == workflow_id
@@ -557,6 +561,55 @@ async def test_run_list_filters(client, admin_token, session):
         await client.get("/api/v1/runs?workflow_id=999999", headers=auth_headers(admin_token))
     ).json()["data"]
     assert missing["total"] == 0
+
+
+async def test_run_trace_available_requires_persisted_trace_row(
+    client, admin_token, session
+):
+    """trace_id 只代表已分配标识；traces 行缺失时必须如实报告未采集。"""
+    await _seed_agent(session)
+    created = await _create_workflow(client, admin_token, name="wf-trace", dsl=_dsl())
+    await _publish(client, admin_token, created["id"])
+    run = await _create_run(client, admin_token, created["id"])
+
+    db_run = await session.get(WorkflowRun, run["id"])
+    db_run.trace_id = "a" * 32
+    db_run.root_span_id = "b" * 16
+    await session.flush()
+
+    # 仅有 trace_id、尚无 traces 行：列表与详情都必须报告不可用。
+    listing = (
+        await client.get("/api/v1/runs", headers=auth_headers(admin_token))
+    ).json()["data"]
+    listed = next(item for item in listing["items"] if item["id"] == run["id"])
+    assert listed["trace_id"] == "a" * 32
+    assert listed["trace_available"] is False
+    detail = (
+        await client.get(f"/api/v1/runs/{run['id']}", headers=auth_headers(admin_token))
+    ).json()["data"]
+    assert detail["trace_available"] is False
+
+    session.add(
+        Trace(
+            tenant_id=TENANT,
+            trace_id="a" * 32,
+            name="workflow.wf-trace",
+            source="workflow_run",
+            status="running",
+            start_time=datetime.now(timezone.utc),
+        )
+    )
+    await session.flush()
+
+    listing = (
+        await client.get("/api/v1/runs", headers=auth_headers(admin_token))
+    ).json()["data"]
+    listed = next(item for item in listing["items"] if item["id"] == run["id"])
+    assert listed["trace_available"] is True
+    detail = (
+        await client.get(f"/api/v1/runs/{run['id']}", headers=auth_headers(admin_token))
+    ).json()["data"]
+    assert detail["trace_available"] is True
 
 
 async def test_cancel_state_machine(client, admin_token, session):

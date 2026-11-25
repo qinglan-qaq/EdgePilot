@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from app.models.run import WorkflowNodeRun, WorkflowRun
 from app.models.workflow import Workflow, WorkflowVersion
+from app.observability.models.trace import Trace
 from app.repositories.base import BaseRepository
 
 
@@ -241,6 +242,24 @@ class WorkflowRepo(BaseRepository[Workflow]):
                 WorkflowRun.tenant_id == tenant_id,
             )
         )
+
+    async def existing_trace_ids(
+        self, tenant_id: uuid.UUID, trace_ids: set[str]
+    ) -> set[str]:
+        """返回确实落库的 trace_id。
+
+        ``workflow_runs.trace_id`` 只表示已分配标识；观测写入降级时可能没有
+        ``traces`` 行，列表与详情据此区分“已采集”和“记录缺失”。
+        """
+        if not trace_ids:
+            return set()
+        rows = await self.session.scalars(
+            select(Trace.trace_id).where(
+                Trace.tenant_id == tenant_id,
+                Trace.trace_id.in_(trace_ids),
+            )
+        )
+        return set(rows)
 
     async def list_node_runs(
         self, tenant_id: uuid.UUID, run_id: int
