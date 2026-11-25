@@ -1979,7 +1979,20 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **P5 退出验收**：`make seed` 后 `/events` 有 200 条（区域分布不均）；`POST /knowledge/search` 返回带 `chunk_id` 与分数；`retrieval_records` 有对应行（观测计划 `0004` 之后）。
 
+### Task 19 代码级展开（已实现）
+
+- 新增 `app/vision/{geometry,detector,rules,snapshot,service}.py`，全部不依赖 numpy/ultralytics；bbox 统一 `(x,y,w,h)`。
+- 几何：`point_in_polygon` 射线法 + 边/顶点容差判定为“在内”；`segments_intersect` 同时校验叉积符号与线段真实相交，避免延长线误报。
+- 规则：`ZoneRule`（中心点在多边形内）、`LineRule`（前后帧叉积符号变化 + 相交，payload 带 `positive_to_negative|negative_to_positive`）、`DwellRule`（跨帧累计、离开清零、桶内一次）、`CountRule`（连续 N 帧、桶内一次，无 track_id 也可工作）。缺 track_id 时 zone/line/dwell 不产事件，不编造 ID。
+- 去重：`bucket_for` 取 UTC `int(timestamp//300)`；`dedup_key = device:rule:track_id:bucket`，count 为 `device:rule:bucket`；`RuleEngine` 按设备/桶二次去重，跨桶可再发。
+- 检测器：`MockDetector` 按脚本确定性回放、无脚本显式空列表，`model_version="mock-v1"` 且 `is_mock=True`；`YoloDetector` 构造/检测直接 `NotImplementedError`；`create_detector` 未知类型抛 ValueError。
+- 截图：`capture_snapshot` 只把用户 URI 当 ffmpeg 输入，输出路径由 `storage_dir/snapshots/events/YYYY-MM-DD/{device}-{uuid}.jpg` 生成；ffmpeg 缺失/超时/非零退出时用 Pillow 生成纯色占位图，`degraded=True` 并保留真实 error，不画检测框。`resolve_snapshot_path` 拒绝绝对路径与 `..` 穿越。
+- 入库：`ingest_frame` 不重跑检测，只把 Frame 交给规则引擎；`dedup_key` 冲突用 savepoint 幂等跳过；mock 事件 payload 强制 `simulated/mock=true`，截图尝试时写 `snapshot_degraded`（失败附 `snapshot_error`）。不新增表、不加迁移。
+- 事件 API：`GET /events`（分页 + start/end/node/device/type/severity/status 筛选，occurred_at desc,id desc）、`GET /events/{id}`、`POST /events/{id}/ack`（admin/operator，new→acked 幂等，旁路审计 `event.ack`）、`GET /events/{id}/snapshot`（FileResponse image/jpeg|png，缺失/穿越 404）。viewer 可读、写接口 403。
+- 测试：`tests/unit/vision/test_vision_rules.py`（17 条，几何/越线/去重/dwell/count/detector/截图降级与穿越）、`tests/integration/test_events_api.py`（9 条，筛选分页/租户隔离/ack 权限与幂等/快照流与 404/ingest 幂等与降级标记）。全量 202 passed，`alembic check` 无漂移。
+
 ---
+
 
 ## P6 工作流引擎与前端（契约级）
 
