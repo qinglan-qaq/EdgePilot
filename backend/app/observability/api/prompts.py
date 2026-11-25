@@ -106,6 +106,21 @@ async def get_template(
     return ok(detail)
 
 
+@router.get("/{template_pk}/executions")
+async def list_executions(
+    template_pk: int,
+    params: PageParams = Depends(),
+    _user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """分页读取模板执行历史（按 created_at、id 倒序）。
+
+    与 Span 详情一致，viewer 可读；模板不存在或跨租户一律 404。
+    """
+    page = await version_manager.list_executions(session, template_pk, params)
+    return ok(page.model_dump())
+
+
 @router.post("/{template_pk}/versions")
 async def add_version(
     template_pk: int,

@@ -13,6 +13,7 @@ from app.api.v1.tools import router as tools_router
 from app.api.v1.workflows import router as workflows_router
 from app.observability.api.analytics import router as analytics_router
 from app.observability.api.prompts import router as prompts_router
+from app.observability.api.settings import router as obs_settings_router
 from app.observability.api.traces import router as observability_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -30,6 +31,7 @@ api_router.include_router(knowledge_router)
 api_router.include_router(observability_router)
 api_router.include_router(analytics_router)
 api_router.include_router(prompts_router)
+api_router.include_router(obs_settings_router)
 
 
 @api_router.get("/ping")

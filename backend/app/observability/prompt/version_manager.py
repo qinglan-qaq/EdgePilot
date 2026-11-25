@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import Conflict, NotFound
 from app.core.pagination import PageParams, PageResult
 from app.core.tenancy import get_tenant_id
-from app.observability.models import PromptTemplate, PromptVersion
+from app.observability.models import PromptExecution, PromptTemplate, PromptVersion
 
 
 def template_summary(row: PromptTemplate) -> dict:
@@ -40,6 +40,22 @@ def template_detail(row: PromptTemplate) -> dict:
         "status": row.status,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+    }
+
+
+def execution_dict(row: PromptExecution) -> dict:
+    """对外暴露的执行记录字段；缺失值保持 null，不做补齐。"""
+    return {
+        "id": row.id,
+        "trace_id": row.trace_id,
+        "span_id": row.span_id,
+        "template_version": row.template_version,
+        "render_status": row.render_status,
+        "model_name": row.model_name,
+        "prompt_hash": row.prompt_hash,
+        "variables": row.variables,
+        "rendered_messages": row.rendered_messages,
+        "created_at": row.created_at,
     }
 
 
@@ -235,6 +251,40 @@ async def list_versions(
                 .order_by(PromptVersion.version.desc())
             )
         ).all()
+    )
+
+
+async def list_executions(
+    session: AsyncSession, template_pk: int, params: PageParams
+) -> PageResult[dict]:
+    """分页读取模板的执行历史，按 created_at、id 倒序。
+
+    先校验模板属于当前租户：跨租户与不存在一律 404。统计与分页查询都同时
+    限定 ``tenant_id`` 与数字模板主键，绝不返回其他租户数据。
+    """
+    await get_template(session, template_pk)
+    tenant_id = get_tenant_id()
+    filters = (
+        PromptExecution.tenant_id == tenant_id,
+        PromptExecution.template_id == template_pk,
+    )
+    total = await session.scalar(
+        select(func.count()).select_from(PromptExecution).where(*filters)
+    )
+    rows = (
+        await session.scalars(
+            select(PromptExecution)
+            .where(*filters)
+            .order_by(PromptExecution.created_at.desc(), PromptExecution.id.desc())
+            .offset(params.offset)
+            .limit(params.size)
+        )
+    ).all()
+    return PageResult(
+        items=[execution_dict(row) for row in rows],
+        total=total or 0,
+        page=params.page,
+        size=params.size,
     )
 
 
