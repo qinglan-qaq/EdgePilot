@@ -1910,6 +1910,20 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **测试**：`test_report_evidence.py` —— 全部 `[n]` 均有对应证据、无证据结论被跳过、非法类型 fail closed、跨结论复用证据同号、`ReportOutput` 校验、失败条目忽略与空结果「证据不足」；纯内存运行，无 DB/网络/休眠。
 
+### P3 退出验收（已实现）
+
+**入口语义**：`POST /api/v1/agents/{id}/test` 现在按 Agent 类型分流——`agent_type=="supervisor"` 时跑一整轮编排（一次 planner + 五个领域子 Agent），其它类型保持原有单 Agent 试跑语义，响应字段不变（`id/status/output/error/trace_id/span_id/total_tokens/total_cost/retry_count`）。
+
+**Supervisor 自落库**：`Supervisor` 新增 keyword-only `agent_id` / `agent_version` / `tenant_id`；传入 `session + agent_id` 时在编排结束（含 `partial` / `failed`）后写且只写一行 `agent_runs`（`output` 转纯 JSON、`retry_count=0`、成本不臆测保持 `None`），并把 `result.agent_run_id` 回填到响应 `id`。落库失败不打断编排：回滚 + 记日志 + `errors` 追加 `supervisor_run_persist_failed: ...`。
+
+**按 Agent 选 fixture**：`Supervisor._default_runner` 读取子 Agent `config["mock_fixture"]`，非空时构造独立 `LLMClient(mode=settings.llm_mode, fixture_dir=settings.llm_fixture_dir, fixture_name=<fixture>)`；未配置时沿用构造注入的 `self._llm`，注入 runner 的既有单测不受影响。
+
+**共享会话串行化**：五个 `Send` 分支复用同一请求级 `AsyncSession`，而 SQLAlchemy 会话并非并发安全（并发 flush 会报 `Session is already flushing`）。`Supervisor` 持有一把 `asyncio.Lock`：`_load_published_agent` 与该锁互斥，`run_agent` 新增可选 `db_lock` 参数只包住「写运行行 + commit」，LLM 调用阶段不持锁——分支仍并行，DB 操作串行；不传 `db_lock` 时单 Agent 试跑行为不变。
+
+**验收断言**：`tests/e2e/test_agent_flow.py`（`@pytest.mark.e2e`）用六个确定性 fixture 播种六个已发布 Agent，发一次请求后断言——`agent_runs` 中该 `trace_id` 恰有 6 行且每 Agent 一行、全部 `succeeded`；`GET /observability/traces/{trace_id}/tree` 展平后恰有 6 个 `span_type=="agent"`（`supervisor.run` + 五个 `agent.<type>`），五个子 span 的父 span 均为 `supervisor.run`、根为 `workflow`；`build_report` 的每个 `[n]` 都落在证据范围内且证据类型合法；输出与 fixture 逐字段一致（不编造数据）。
+
+**运行方式**：`make e2e` = `cd backend && pytest tests -q -m e2e`；新用例已存在，不再返回 `no tests ran`（退出码 5）。
+
 ---
 
 ## P4 边缘与设备（契约级）

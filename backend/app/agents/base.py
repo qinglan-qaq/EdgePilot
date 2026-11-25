@@ -154,6 +154,21 @@ async def _span_scope(
         yield span
 
 
+@asynccontextmanager
+async def _db_gate(lock: asyncio.Lock | None) -> AsyncIterator[None]:
+    """串行化共享会话上的 DB 操作；``None`` 时保持原行为（不加锁）。
+
+    Supervisor 的多个 ``Send`` 分支复用同一个请求级 ``AsyncSession``；
+    SQLAlchemy 会话并非并发安全，加载 Agent / 写运行行的阶段必须排队。
+    LLM 调用阶段不在此门内，因此分支仍然并行。
+    """
+    if lock is None:
+        yield
+        return
+    async with lock:
+        yield
+
+
 async def run_agent(
     agent: Agent,
     task: dict,
@@ -164,6 +179,7 @@ async def run_agent(
     tenant_id: uuid.UUID | None = None,
     trace_handle: Any | None = None,
     span_handle: Any | None = None,
+    db_lock: asyncio.Lock | None = None,
 ) -> AgentRunResult:
     """执行一次 Agent 并写入一行 ``agent_runs``。
 
@@ -181,6 +197,9 @@ async def run_agent(
             **不再新开 agent span，也不负责收口**，只写入 input/output/
             error/meta，由句柄所有者 finish；默认 ``None`` 时自行开 span
             并在退出时关闭。
+        db_lock: 可选的会话互斥锁。Supervisor 的并行分支共享同一
+            ``AsyncSession`` 时传入，保证「写运行行 + commit」串行执行；
+            默认 ``None`` 时行为不变（单 Agent 试跑不加锁）。
 
     Returns:
         ``AgentRunResult``；失败也返回结果，不抛业务异常。
@@ -244,23 +263,24 @@ async def run_agent(
             trace.set_output({"status": outcome.status, "error": outcome.error})
 
     finished_at = datetime.now(timezone.utc)
-    row = await AgentRunRepo(session).create_run(
-        tenant_id=tenant,
-        agent_id=agent.id,
-        agent_version=agent.current_version,
-        status=outcome.status,
-        input=task,
-        output=outcome.output,
-        error=outcome.error,
-        span_id=span_id,
-        trace_id=trace_id,
-        total_tokens=meter.total_tokens,
-        total_cost=meter.total_cost,
-        retry_count=outcome.retry_count,
-        started_at=started_at,
-        finished_at=finished_at,
-    )
-    await session.commit()
+    async with _db_gate(db_lock):
+        row = await AgentRunRepo(session).create_run(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            agent_version=agent.current_version,
+            status=outcome.status,
+            input=task,
+            output=outcome.output,
+            error=outcome.error,
+            span_id=span_id,
+            trace_id=trace_id,
+            total_tokens=meter.total_tokens,
+            total_cost=meter.total_cost,
+            retry_count=outcome.retry_count,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        await session.commit()
 
     return AgentRunResult(
         agent_run_id=row.id,

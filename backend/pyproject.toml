@@ -7,3 +7,4 @@ requires-python = ">=3.11"
 asyncio_mode = "auto"          # 异步 fixture 不必逐个加 pytest_asyncio.fixture
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = ["e2e: P3/P6 end-to-end acceptance tests"]  # make e2e 只跑这些

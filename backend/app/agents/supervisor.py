@@ -30,7 +30,9 @@ import asyncio
 import json
 import logging
 import operator
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, TypedDict
 
@@ -130,6 +132,7 @@ class SupervisorResult:
     errors: list[str] = field(default_factory=list)
     trace_id: str | None = None
     span_id: str | None = None
+    agent_run_id: int | None = None
 
 
 class SupervisorPlannerError(Exception):
@@ -199,11 +202,22 @@ class Supervisor:
             ``session`` + 租户上下文查已发布 Agent（P3 默认 runner 的一部分）。
         session: 默认 runner / agent_loader 所需的请求级会话。注入 runner
             时不需要（单测因此不碰数据库）。
+        agent_id: 传入时，一次编排结束后**自己**落一行 ``agent_runs``
+            （P3 退出验收要求 Supervisor 也占一行），``SupervisorResult``
+            回填 ``agent_run_id``。缺省 ``None`` 时完全不写库，单测行为不变。
+        agent_version: 写入 Supervisor 运行行的版本号（可为 ``None``）。
+        tenant_id: 写运行行所用租户；缺省取上下文租户。
 
     Note:
         ``session`` 是相对契约签名新增的可选参数，仅服务于「默认 runner
         解析已发布 Agent」；不传且未注入 runner 时抛结构化
         ``supervisor_runner_unavailable``。
+
+        默认 runner 现在按**子 Agent 自己的** ``config["mock_fixture"]``
+        构造 ``LLMClient``：同一个编排里 Supervisor planner 与五个子 Agent
+        各自命中不同 fixture，不会共用 supervisor 的 planner 响应。没有
+        fixture 时回落到构造函数注入的 ``llm``；注入 runner 的单测完全不受
+        影响。
     """
 
     def __init__(
@@ -216,6 +230,9 @@ class Supervisor:
         limits: SupervisorLimits | None = None,
         agent_loader: AgentLoader | None = None,
         session: Any | None = None,
+        agent_id: int | None = None,
+        agent_version: int | None = None,
+        tenant_id: uuid.UUID | None = None,
     ) -> None:
         self._llm = llm
         self._tracer = tracer
@@ -224,12 +241,20 @@ class Supervisor:
         self._limits = limits or SupervisorLimits()
         self._agent_loader = agent_loader
         self._session = session
+        self._agent_id = agent_id
+        self._agent_version = agent_version
+        self._tenant_id = tenant_id
+        # 并行 Send 分支复用同一个请求级 AsyncSession，SQLAlchemy 会话不是
+        # 并发安全的：所有会话操作（加载 Agent / 写运行行）走同一把锁，
+        # LLM 调用不持锁，分支仍并行。
+        self._db_lock = asyncio.Lock()
         self._graph = self._build_graph()
 
     # ------------------------------------------------------------------ 入口
 
     async def run(self, task: dict) -> SupervisorResult:
         """执行一次编排；超时 / 图异常都返回结构化结果而非抛异常。"""
+        started_at = datetime.now(timezone.utc)
         buffer = _RunBuffer()
         span = self._begin_span(task)
         supervisor_span_id = _id_or_none(getattr(span, "span_id", None))
@@ -254,7 +279,63 @@ class Supervisor:
         if result.span_id is None and span is not None:
             result.span_id = _id_or_none(getattr(span, "span_id", None))
         self._finish_span(span, result)
+        await self._persist_run(task, result, started_at)
         return result
+
+    # ------------------------------------------------------------------ 持久化
+
+    async def _persist_run(
+        self,
+        task: dict,
+        result: SupervisorResult,
+        started_at: datetime,
+    ) -> None:
+        """编排结束后为 Supervisor **自己**落一行 ``agent_runs``。
+
+        仅当同时提供 ``session`` 与 ``agent_id`` 时写库（注入 planner/runner
+        的单测不传，因此完全不碰数据库）。运行行与 ``base.run_agent`` 口径
+        一致：``input`` 为原始任务、``output`` 为聚合后的纯 JSON、token 只写
+        各子 Agent 实际回报之和，``total_cost`` 恒为 ``None``（不估算）。
+
+        写库失败绝不把成功的编排变成崩溃：回滚、记日志，并把
+        ``supervisor_run_persist_failed: ...`` 追加到 ``result.errors``。
+        """
+        if self._session is None or self._agent_id is None:
+            return
+        try:
+            from app.core.tenancy import get_tenant_id
+            from app.repositories.agent_repo import AgentRunRepo
+
+            tenant = self._tenant_id or get_tenant_id()
+            output = result.output
+            if isinstance(output, BaseModel):
+                output = output.model_dump()
+            row = await AgentRunRepo(self._session).create_run(
+                tenant_id=tenant,
+                agent_id=self._agent_id,
+                agent_version=self._agent_version,
+                status=result.status,
+                input=task,
+                output=output if isinstance(output, dict) else None,
+                error=result.error,
+                span_id=result.span_id,
+                trace_id=result.trace_id,
+                total_tokens=result.total_tokens,
+                retry_count=0,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+            )
+            await self._session.commit()
+            result.agent_run_id = row.id
+        except Exception as exc:  # noqa: BLE001 - 持久化是旁路，绝不打断编排
+            logger.exception("Supervisor 运行行落库失败（agent_id=%s）", self._agent_id)
+            try:
+                await self._session.rollback()
+            except Exception as rollback_exc:  # noqa: BLE001 - 回滚失败只记日志
+                logger.debug("Supervisor 运行行回滚失败：%s", rollback_exc)
+            result.errors.append(
+                f"supervisor_run_persist_failed: {type(exc).__name__}: {exc}"
+            )
 
     # ------------------------------------------------------------------ 图节点
 
@@ -506,14 +587,12 @@ class Supervisor:
             raise SupervisorRunnerError(
                 RUNNER_UNAVAILABLE, "默认 runner 需要 session；请在构造函数传入"
             )
-        if self._llm is None:
-            raise SupervisorRunnerError(
-                RUNNER_UNAVAILABLE, "默认 runner 需要 llm；请在构造函数传入"
-            )
 
         loader = self._agent_loader or self._load_published_agent
         try:
-            agent = await loader(assignment.agent_type)
+            # 会话非并发安全：查询已发布 Agent 也必须排队。
+            async with self._db_lock:
+                agent = await loader(assignment.agent_type)
         except SupervisorRunnerError:
             raise
         except Exception as exc:  # noqa: BLE001 - 加载失败收敛为结构化错误
@@ -528,8 +607,27 @@ class Supervisor:
                 f"没有已发布的 {assignment.agent_type} Agent",
             )
 
+        # 每个子 Agent 用自己的 mock fixture（懒导入避免 agents 包循环引用）；
+        # 没有 fixture 时回落到注入的 llm，注入 runner 的单测不受影响。
         from app.agents.base import run_agent
+        from app.agents.llm import LLMClient
+        from app.core.config import get_settings
         from app.observability import get_tracer
+
+        config = getattr(agent, "config", None)
+        fixture_name = config.get("mock_fixture") if isinstance(config, dict) else None
+        llm = self._llm
+        if isinstance(fixture_name, str) and fixture_name.strip():
+            settings = get_settings()
+            llm = LLMClient(
+                mode=settings.llm_mode,
+                fixture_dir=settings.llm_fixture_dir,
+                fixture_name=fixture_name,
+            )
+        if llm is None:
+            raise SupervisorRunnerError(
+                RUNNER_UNAVAILABLE, "默认 runner 需要 llm；请在构造函数传入"
+            )
 
         payload = {"goal": assignment.goal, "input": assignment.input}
         from app.observability import context as obs_context
@@ -538,12 +636,14 @@ class Supervisor:
             agent,
             payload,
             tracer=self._tracer or get_tracer(),
-            llm=self._llm,
+            llm=llm,
             session=self._session,
             # 复用图内当前 trace/span，避免默认 runner 另开嵌套 trace；
             # 句柄可能是 NullTrace/NullSpan，run_agent 自行兜底。
             trace_handle=obs_context.current_trace.get(),
             span_handle=obs_context.current_span.get(),
+            # 同一请求会话被多个分支共享：写运行行 + commit 必须排队。
+            db_lock=self._db_lock,
         )
 
     async def _load_published_agent(self, agent_type: str) -> Any:
@@ -820,6 +920,8 @@ def _aggregate_output(
                 "status": entry.get("status"),
                 "output": entry.get("output"),
                 "error": entry.get("error"),
+                # 运行行 id 一并回给调用方，便于把结论回溯到具体 agent_runs 行。
+                "agent_run_id": entry.get("agent_run_id"),
             }
         )
         output = entry.get("output")

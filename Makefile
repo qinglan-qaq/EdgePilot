@@ -21,7 +21,7 @@ migrate:
 test:
 	cd backend && $(PYTHON) -m pytest tests -q
 
-# 当前尚无 @pytest.mark.e2e 用例，此目标会返回 "no tests ran"（退出码 5）。
+# P3 退出验收：一次请求产出 6 行 agent_runs / 6 个 agent span 同 trace。
 e2e:
 	cd backend && $(PYTHON) -m pytest tests -q -m e2e
 
