@@ -1892,6 +1892,24 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **测试**：`test_supervisor_parallel.py` —— 两个并行 agent span 时间区间重叠且 `parent_span_id` 同为 `supervisor.run`；`branch_timeout_s=0.05` 时慢分支失败、快分支结果保留、整体 `partial` 且不抛异常。
 
+### Task 16 代码级展开（已实现）
+
+**文件**：`app/agents/report.py`（确定性构建器）、`app/agents/schemas.py`（`ReportHighlight` / `ReportOutput.title|highlights`）、`app/tools/builtin/report_gen.py`（由 `builtin/report.py` 重命名，工具 ID 仍为 `generate_report`）、`tests/unit/agents/test_report_evidence.py`。
+
+**构建 API**：`EVIDENCE_TYPES={event_id,metric,chunk_id}`、`ReportEvidenceError(code="report_evidence_invalid")`、`ReportFinding(statement, agent_type, evidence)`、`collect_findings(results)`、`render_report(title, findings)`、`build_report(results, title=?, task=?)`；全程不调用 LLM，只搬运 Supervisor 成功子结果。
+
+**结论提取**：仅 `status=="succeeded"` 且 `output` 为 dict 的条目；device 取 `answer`（空白时回退 `device_status`），vision/operations 取 `summary`，diagnosis 取 `conclusion`，跳过 report/supervisor 与未知类型；空白结论或无证据结论均不写入报告（不补造证据）。
+
+**编号与去重**：证据按首次使用顺序全局编号，`(type, ref)` 相同复用同一编号；同一结论重复证据只引用一次，故 `[n]` 恒为 `1..len(evidence)`，且每条结论的 `highlights[].evidence` 非空。
+
+**严格校验**：`type` 必须命中白名单、`ref` 去空白后非空、`snippet` 可空但必须是字符串；任何非法证据（含缺失字段、非对象项）立即抛 `ReportEvidenceError`，不静默丢弃。
+
+**无证据行为**：无有效结论时 Markdown 固定输出 `证据不足：没有可回溯证据支持的结论。`，`evidence=[]`、`highlights=[]`、`finding_count=0`；标题优先级为显式 `title` → `task["title"]` → `task["goal"]` → `EdgePilot 诊断报告`。返回结构可直接 `ReportOutput.model_validate`（未对 `ReportOutput` 自身开启证据强制，`ReportOutput(markdown=...)` 仍合法）。
+
+**工具兼容**：`generate_report` 的 schema、`permission_scope="read"`、超时/重试与渲染逻辑逐字节不变，`BUILTIN_TOOL_IDS` 仍为原 9 个名称。
+
+**测试**：`test_report_evidence.py` —— 全部 `[n]` 均有对应证据、无证据结论被跳过、非法类型 fail closed、跨结论复用证据同号、`ReportOutput` 校验、失败条目忽略与空结果「证据不足」；纯内存运行，无 DB/网络/休眠。
+
 ---
 
 ## P4 边缘与设备（契约级）

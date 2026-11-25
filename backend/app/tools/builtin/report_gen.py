@@ -1,4 +1,9 @@
-"""报告生成内置工具：只把调用方给的结构化段落拼成 Markdown，不编内容。"""
+"""报告生成内置工具（``generate_report``）：只把结构化段落拼成 Markdown，不编内容。
+
+这是仓库内唯一的报告渲染工具实现：模块名刻意用 ``report_gen``，避免与
+``app.agents.report``（Agent 契约/证据链构建器）以及旧 ``builtin/report.py``
+混淆；工具 ID、权限范围与渲染行为保持不变。
+"""
 
 from app.tools.registry import ToolContext, ToolRegistry
 

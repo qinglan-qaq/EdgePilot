@@ -107,10 +107,26 @@ class DiagnosisOutput(EvidenceBackedOutput):
     CONCLUSION_FIELDS: ClassVar[tuple[str, ...]] = ("conclusion",)
 
 
-class ReportOutput(EvidenceBackedOutput):
-    """报告 Agent 输出：本期只约束 Markdown 主体，证据链留给 Task 16。"""
+class ReportHighlight(BaseModel):
+    """报告中一条可回溯结论：statement 必须至少有一条 evidence。"""
 
+    model_config = ConfigDict(extra="allow")
+
+    statement: str
+    evidence: list[Evidence] = Field(min_length=1)
+
+
+class ReportOutput(EvidenceBackedOutput):
+    """报告 Agent 输出：Markdown 主体 + 标题 + 可回溯结论列表。
+
+    本期不在此处强制 ``CONCLUSION_FIELDS``（``ReportOutput(markdown=...)``
+    仍必须合法）；证据链由 ``app.agents.report`` 的确定性构建器负责，
+    构建器返回的结构可直接通过本模型校验。
+    """
+
+    title: str | None = None
     markdown: str
+    highlights: list[ReportHighlight] = Field(default_factory=list)
 
 
 OUTPUT_MODELS: dict[str, type[BaseModel]] = {

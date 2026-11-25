@@ -4,7 +4,7 @@
 后续经 MCP 暴露（Task 12），本地 handler 保持同一套权限/超时/审计外壳。
 """
 
-from app.tools.builtin import device, knowledge, operations, report, vision
+from app.tools.builtin import device, knowledge, operations, report_gen, vision
 from app.tools.registry import ToolRegistry, get_default_registry
 
 # MVP §8.2 约定的 9 个工具名（注册后应恰好一一对应）
@@ -25,7 +25,7 @@ _REGISTRARS = (
     vision.register,
     operations.register,
     knowledge.register,
-    report.register,
+    report_gen.register,
 )
 
 
