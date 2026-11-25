@@ -1979,6 +1979,8 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **P5 退出验收**：`make seed` 后 `/events` 有 200 条（区域分布不均）；`POST /knowledge/search` 返回带 `chunk_id` 与分数；`retrieval_records` 有对应行（观测计划 `0004` 之后）。
 
+**已验收（真实库）**：`vision_events=200`；`消防通道` 检索返回 `chunk_id=10`、`score=0.016393`；用真实 `Tracer` 发起一次 traced 检索后 `retrieval_records` 新增 1 行（`span_id` 16 位、`retrieved_documents` 2 条、`reranked_documents` 首条分数非空），对应 `retrieval.hybrid` span 已关联 trace。说明：按观测规范，独立 `POST /knowledge/search` 不是 trace 生产点，未处于 trace 中时只做检索、不写 `retrieval_records`；记录由 Agent/工作流内的检索调用产生。
+
 ### Task 19 代码级展开（已实现）
 
 - 新增 `app/vision/{geometry,detector,rules,snapshot,service}.py`，全部不依赖 numpy/ultralytics；bbox 统一 `(x,y,w,h)`。
