@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     mqtt_password: str = ""
 
     jwt_secret: str = "dev-only-change-me"
+    # 独立的密钥加密密钥（Fernet）；生产必须由 SECRET_ENCRYPTION_KEY 提供。
+    # 留空时仅开发环境由 jwt_secret 派生稳定密钥，见 app/core/crypto.py。
+    secret_encryption_key: str = ""
     jwt_algorithm: str = "HS256"
     access_token_minutes: int = 15
     refresh_token_days: int = 7
