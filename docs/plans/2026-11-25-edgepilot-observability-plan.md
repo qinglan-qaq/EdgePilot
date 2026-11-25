@@ -2031,6 +2031,14 @@ git commit -m "feat(obs): Prompt 渲染、执行记录与 Playground"
 | 16 | Trace Detail 三栏 | `views/observability/TraceDetail.vue`、`components/observability/{SpanTree,SpanTimeline,SpanInspector,JsonViewer}.vue` | 左树中时间线右 Inspector；10 个 Tab 懒加载；选中联动；失败节点默认展开 | `test_trace_detail.spec.ts`：点第 3 个 span → Inspector 切换且 Timeline 高亮 |
 | 17 | 三个分析页 + Prompt UI | `views/observability/{Tools,Models,Agents,Prompts,Playground,Settings}.vue` | 全部数据来自 analytics API；Prompt 对比用 diff 视图；Settings 改采集模式需二次确认 | `test_prompt_compare.spec.ts`：两版本渲染差异高亮 |
 
+### Task 13 代码级展开（已实现）
+
+- **文件**：`observability/metrics.py` 新增指标；`observability/collector.py` 的 `EventCollector` 接入边沿触发状态机；`capture.py` 的 `resolve_mode` 语义不变（`OFF` 优先，降级时 `FULL/REDACTED → METADATA`）。
+- **新增指标**：`observability_collector_degraded`（Gauge，1=降级/0=正常）与 `observability_degraded_transitions_total{state}`（Counter，`state ∈ degraded|recovered`）。
+- **边沿触发语义**：连续 5 批写失败首次进入降级时置 `degraded=True`、gauge=1、`{state="degraded"}` +1、记录一条 `WARNING`（带失败批次streak）；已在降级态继续失败只累加 `dropped["write_failed"]` 与 `event_dropped{reason="write_failed"}`，不再重复计数。任一批写入成功即恢复：`degraded=False`、gauge=0、`{state="recovered"}` +1、记录一条 `INFO`。
+- **`/metrics`**：`app/core/metrics.py#render()` 无需改动，即可输出新 gauge/counter 及既有的 `observability_event_dropped_total{reason="write_failed"}`。
+- **测试** `tests/unit/observability/test_degrade_state_machine.py`：`test_degrade_transition_is_emitted_once`（5+2 批失败，事件只发一次、丢弃计数==7）、`test_recovery_returns_to_configured_mode`（恢复事件一次、gauge 归零、`resolve_mode` 语义不变）、`test_dropped_metric_is_exposed`（`render()` 文本含丢弃/降级指标）。断言均按全局注册表的**增量**取值。
+
 ### Task 9 代码级展开（已实现）
 
 `GET /api/v1/observability/spans/{span_id}`（viewer 可读，租户取自 `TenantContext`）返回 span 字段 + 三组 1:N 数组：`llm_calls`、`tool_calls`、`retrieval_records`。实现位于 `services/trace_service.py` 的 `get_span` / `_related_records`：

@@ -1,4 +1,16 @@
 import asyncio
+import logging
+
+from app.observability.metrics import (
+    event_dropped,
+    observability_collector_degraded,
+    observability_degraded_transitions_total,
+)
+
+logger = logging.getLogger(__name__)
+
+# 连续写失败达到该批次数后进入降级模式（采集模式降到 METADATA）。
+DEGRADE_THRESHOLD = 5
 
 
 class EventCollector:
@@ -76,18 +88,35 @@ class EventCollector:
             try:
                 await self._writer.write(batch)
                 self._consecutive_failures = 0
-                if self.degraded:
-                    self.degraded = False  # 写入恢复后自动退出降级
+                self._recover_if_degraded()  # 写入恢复后自动退出降级
                 return
             except Exception:
                 if attempt == 2:
                     self.dropped["write_failed"] += len(batch)
                     self._consecutive_failures += 1
-                    if self._consecutive_failures >= 5:
-                        # 连续 5 批写不进去 → 降到 METADATA（只留结构，不存正文）
-                        self.degraded = True
-                    from app.observability.metrics import event_dropped
-
+                    if self._consecutive_failures >= DEGRADE_THRESHOLD:
+                        self._enter_degraded()
                     event_dropped.labels(reason="write_failed").inc(len(batch))
                     return
                 await asyncio.sleep(self._retry_delays[attempt])
+
+    def _enter_degraded(self) -> None:
+        """边沿触发：仅在首次达到阈值时记录一次降级事件/指标。"""
+        if self.degraded:
+            return
+        self.degraded = True
+        observability_collector_degraded.set(1)
+        observability_degraded_transitions_total.labels(state="degraded").inc()
+        logger.warning(
+            "观测采集进入降级模式：连续 %d 批写入失败，采集模式降为 METADATA",
+            self._consecutive_failures,
+        )
+
+    def _recover_if_degraded(self) -> None:
+        """边沿触发：仅在从降级恢复时记录一次恢复事件/指标。"""
+        if not self.degraded:
+            return
+        self.degraded = False
+        observability_collector_degraded.set(0)
+        observability_degraded_transitions_total.labels(state="recovered").inc()
+        logger.info("观测采集已恢复：写入成功，返回配置的采集模式")
