@@ -143,6 +143,16 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "llm"
 
 
 @pytest.fixture(scope="session", autouse=True)
+def disable_celery_enqueue():
+    """测试绝不连接真实 broker；需要断言入队的用例自行 monkeypatch。"""
+    settings = get_settings()
+    previous = settings.celery_enabled
+    settings.celery_enabled = False
+    yield
+    settings.celery_enabled = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def llm_fixtures():
     """写入两个确定性 mock 响应，供 integration 测试使用。"""
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)

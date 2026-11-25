@@ -43,6 +43,7 @@ class ToolContext:
         session_factory: 需要自建会话时使用的工厂（可选）。
         permission_scope: Agent 级权限上限；None 表示不额外收紧。
         trace_id: 关联的 trace；缺省时审计服务回退到 request_id。
+        idempotency_key: 幂等键（工作流节点为 ``run:node``）；None 表示不声明。
     """
 
     agent_id: int | None = None
@@ -52,6 +53,7 @@ class ToolContext:
     session_factory: Any | None = None
     permission_scope: str | None = None
     trace_id: str | None = None
+    idempotency_key: str | None = None
 
 
 @dataclass

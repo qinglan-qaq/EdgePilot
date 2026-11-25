@@ -1,4 +1,4 @@
-"""运行记录路由：登录即可读；operator/admin 可取消。
+"""运行记录路由：登录即可读；operator/admin 可取消；审批按角色成员校验。
 
 运行详情与节点时间线只读数据库现状，不触发任何执行逻辑。
 """
@@ -14,6 +14,7 @@ from app.db import get_db
 from app.models.user import User
 from app.schemas.common import ok
 from app.schemas.workflow import (
+    ApprovalDecisionIn,
     RunLogOut,
     WorkflowNodeRunOut,
     WorkflowRunDetailOut,
@@ -22,6 +23,11 @@ from app.schemas.workflow import (
 from app.services.run_service import RunContext, RunService
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+def _client_meta(request: Request) -> tuple[str | None, str | None]:
+    ip = request.client.host if request.client else None
+    return ip, request.headers.get("user-agent")
 
 
 def run_to_out(ctx: RunContext) -> WorkflowRunOut:
@@ -126,11 +132,55 @@ async def cancel_run(
     user: User = Depends(require_role("admin", "operator")),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
-    ip = request.client.host if request.client else None
+    ip, user_agent = _client_meta(request)
     ctx = await RunService(session).cancel(
         run_id,
         user=user,
         ip=ip,
-        user_agent=request.headers.get("user-agent"),
+        user_agent=user_agent,
+    )
+    return ok(run_detail_to_out(ctx).model_dump())
+
+
+@router.post("/{run_id}/approve")
+async def approve_run(
+    run_id: int,
+    request: Request,
+    payload: ApprovalDecisionIn | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """批准等待中的审批节点；角色成员资格在 service 内校验。"""
+    body = payload or ApprovalDecisionIn()
+    ip, user_agent = _client_meta(request)
+    ctx = await RunService(session).decide(
+        run_id,
+        approve=True,
+        comment=body.comment,
+        user=user,
+        ip=ip,
+        user_agent=user_agent,
+    )
+    return ok(run_detail_to_out(ctx).model_dump())
+
+
+@router.post("/{run_id}/reject")
+async def reject_run(
+    run_id: int,
+    request: Request,
+    payload: ApprovalDecisionIn | None = None,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """拒绝等待中的审批节点；非审批角色返回 403。"""
+    body = payload or ApprovalDecisionIn()
+    ip, user_agent = _client_meta(request)
+    ctx = await RunService(session).decide(
+        run_id,
+        approve=False,
+        comment=body.comment,
+        user=user,
+        ip=ip,
+        user_agent=user_agent,
     )
     return ok(run_detail_to_out(ctx).model_dump())

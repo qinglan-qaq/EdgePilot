@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     test_database_url: str = "postgresql+asyncpg://edgepilot:edgepilot@localhost:5433/edgepilot_test"
     redis_url: str = "redis://localhost:6379/0"
     rabbitmq_url: str = "amqp://edgepilot:edgepilot@localhost:5672//"
+    # Celery：broker 留空时回退 rabbitmq_url；result backend 留空表示不取结果。
+    celery_broker_url: str = ""
+    celery_result_backend: str = ""
+    # 测试夹具会关闭；生产开启但 enqueue 失败只告警，绝不影响 API。
+    celery_enabled: bool = True
+    workflow_stale_after_s: int = 60
+    workflow_scan_interval_s: int = 60
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
     mqtt_username: str = ""

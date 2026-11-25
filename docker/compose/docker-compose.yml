@@ -109,6 +109,34 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Celery beat 负责审批超时扫描与僵死运行重投；与 worker 使用同一镜像与环境。
+  scheduler:
+    image: edgepilot-api:local
+    profiles: ["app"]
+    command:
+      - celery
+      - -A
+      - app.worker
+      - beat
+      - -l
+      - info
+      - --schedule=/tmp/celerybeat-schedule
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edgepilot:edgepilot@postgres:5432/edgepilot
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://edgepilot:edgepilot@rabbitmq:5672//
+      MQTT_HOST: mosquitto
+      OBS_ENABLED: "true"
+      OBS_CAPTURE_MODE: REDACTED
+      LLM_MODE: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   pg_data:
   redis_data:

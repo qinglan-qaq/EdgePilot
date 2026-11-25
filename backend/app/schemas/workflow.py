@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +39,12 @@ class WorkflowRunCreate(BaseModel):
     input: dict | None = None
     trigger_type: TriggerType = "manual"
     trigger_payload: dict | None = None
+
+
+class ApprovalDecisionIn(BaseModel):
+    """审批意见；角色成员资格由 service 校验，schema 只限制长度。"""
+
+    comment: str | None = Field(default=None, max_length=2000)
 
 
 # ---------------------------------------------------------------- 响应模型
@@ -101,7 +107,7 @@ class WorkflowNodeRunOut(BaseModel):
     status: str
     attempt: int
     input: dict | None
-    output: dict | None
+    output: Any | None
     approval: dict | None
     error: str | None
     span_id: str | None = None
@@ -120,7 +126,7 @@ class WorkflowRunOut(BaseModel):
     trigger_type: str
     trigger_payload: dict | None
     input: dict | None
-    output: dict | None
+    output: Any | None
     error: str | None
     trace_id: str | None
     root_span_id: str | None = None
