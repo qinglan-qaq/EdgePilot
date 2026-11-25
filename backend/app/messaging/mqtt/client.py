@@ -38,6 +38,7 @@ from app.messaging.mqtt.topics import (
     is_valid_node_key,
     parse_uplink,
 )
+from app.observability.propagation import add_traceparent_to_payload
 
 logger = logging.getLogger(__name__)
 
@@ -288,6 +289,10 @@ class MqttService:
         message = dict(payload or {})
         message.setdefault("msg_id", uuid.uuid4().hex)
         message.setdefault("sent_at", datetime.now(timezone.utc).isoformat())
+        # 观测 trace 透传：放在载荷字段而不是 MQTT v5 User Property。
+        # 现场 broker / 旧固件只支持 3.1.1，属性会被静默丢失；载荷字段可被
+        # edge-agent 原样带回，且不改变 topic/action 语义。无 trace 时不添加。
+        add_traceparent_to_payload(message)
         try:
             info = client.publish(
                 topic,

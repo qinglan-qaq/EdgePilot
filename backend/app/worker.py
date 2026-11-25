@@ -28,6 +28,12 @@ from celery.signals import (
 )
 
 from app.core.config import get_settings
+from app.core.tenancy import (
+    current_tenant_id_or_none,
+    reset_tenant_id,
+    set_tenant_id,
+)
+from app.observability import context as obs_context
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +139,56 @@ def run_in_worker_loop(
 ) -> Any:
     """把协程工厂提交到常驻循环并同步等待结果。
 
+    调用线程的 ``contextvars``（trace / span / sequence / tenant）会先被
+    快照成普通值，再在运行于常驻循环的协程内设置、finally 中恢复。这样
+    Celery task 恢复的 trace 能进入 ``_execute_run``，同时不把 ``Context``
+    对象跨线程/并发任务共享。
+
     Args:
-        factory: 无参可调用对象，返回协程。使用工厂而不是协程对象，避免
-            在调用线程里提前创建 / 绑定错误的事件循环。
+        factory: 无参可调用对象，返回协程。协程对象在调用线程创建，
+            协程体则在常驻循环的 Task 中执行。
         timeout: 等待秒数；超时抛 ``concurrent.futures.TimeoutError``。
     """
     loop = start_worker_loop()
-    future = asyncio.run_coroutine_threadsafe(factory(), loop)
+
+    # 只在调用线程读取值；Context 对象本身不跨任务传递，避免并发进入。
+    trace = obs_context.current_trace.get()
+    span = obs_context.current_span.get()
+    sequence = obs_context.sequence.get()
+    tenant = current_tenant_id_or_none()
+
+    coro = factory()
+
+    async def _run_with_caller_context() -> Any:
+        tokens: list[tuple[Any, Any]] = []
+        tenant_token = None
+        try:
+            tokens.append(
+                (obs_context.current_trace, obs_context.current_trace.set(trace))
+            )
+            tokens.append(
+                (obs_context.current_span, obs_context.current_span.set(span))
+            )
+            tokens.append(
+                (obs_context.sequence, obs_context.sequence.set(sequence))
+            )
+            if tenant is not None:
+                tenant_token = set_tenant_id(tenant)
+            return await coro
+        finally:
+            # 本协程运行在独立 Task 的 context 副本里，reset 不会影响其他任务。
+            for var, token in reversed(tokens):
+                try:
+                    var.reset(token)
+                except (ValueError, RuntimeError):
+                    logger.debug("worker loop context reset 失败", exc_info=True)
+            if tenant_token is not None:
+                try:
+                    reset_tenant_id(tenant_token)
+                except (ValueError, RuntimeError):
+                    logger.debug("worker loop tenant reset 失败", exc_info=True)
+
+    future = asyncio.run_coroutine_threadsafe(_run_with_caller_context(), loop)
     try:
         return future.result(timeout=timeout)
     except FutureTimeoutError:

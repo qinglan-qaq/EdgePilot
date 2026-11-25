@@ -26,6 +26,7 @@ from app.services.run_service import (
     find_stale_runs,
 )
 from app.worker import celery_app, run_in_worker_loop
+from app.observability.propagation import TRACE_KWARG, trace_payload_from_current
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +37,27 @@ logger = logging.getLogger(__name__)
 def enqueue_workflow_run(
     run_id: int, resume_node_id: str | None = None
 ) -> bool:
-    """投递一次工作流执行；关闭或 broker 故障时返回 ``False``，绝不抛出。"""
+    """投递一次工作流执行；关闭或 broker 故障时返回 ``False``，绝不抛出。
+
+    若有活动 trace，把最小上下文放进私有 kwargs ``__trace__``，由 worker 的
+    ``task_prerun`` 恢复；无活动 trace 时不传该键，保持既有载荷不变。
+    """
     if not get_settings().celery_enabled:
         return False
+    send_kwargs: dict[str, Any] = {}
+    try:
+        payload = trace_payload_from_current()
+        if payload:
+            send_kwargs["kwargs"] = {TRACE_KWARG: payload}
+    except Exception:  # noqa: BLE001 - 传播失败不能影响业务入队
+        logger.warning("工作流 trace 上下文注入失败（run_id=%s）", run_id, exc_info=True)
     try:
         celery_app.send_task(
             "workflow.execute_run",
             args=[run_id, resume_node_id],
             queue="q.workflow",
             retry=False,
+            **send_kwargs,
         )
         return True
     except Exception:  # noqa: BLE001 - broker 故障不能影响 API / 审批响应
@@ -84,8 +97,16 @@ async def _execute_run(run_id: int, resume_node_id: str | None) -> dict[str, Any
 
 
 @shared_task(name="workflow.execute_run", ignore_result=True)
-def execute_run(run_id: int, resume_node_id: str | None = None) -> dict[str, Any]:
-    """执行或恢复一个工作流运行。"""
+def execute_run(
+    run_id: int,
+    resume_node_id: str | None = None,
+    __trace__: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """执行或恢复一个工作流运行。
+
+    ``__trace__`` 是 Celery 传播用的保留参数，只由 ``task_prerun`` 信号消费；
+    这里保留形参是为了让 broker 投递的 kwargs 能被任务接受。
+    """
     try:
         return run_in_worker_loop(
             lambda: _execute_run(run_id, resume_node_id)
