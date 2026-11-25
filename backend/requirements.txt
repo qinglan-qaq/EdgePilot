@@ -1,0 +1,24 @@
+# backend/requirements.txt（实测下限固定，其余装最新兼容版）
+fastapi==0.136.1
+pydantic==2.13.5
+sqlalchemy==2.0.49
+prometheus-client==0.25.0
+openai==2.36.0
+langgraph==1.0.1
+langchain-core==1.6.3
+pgvector==0.5.0
+uvicorn[standard]
+alembic
+asyncpg
+psycopg[binary]
+celery
+redis
+structlog
+paho-mqtt
+pydantic-settings
+argon2-cffi
+PyJWT
+cryptography
+httpx
+pytest
+pytest-asyncio
