@@ -2036,7 +2036,7 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 ### Task 22A 代码级展开（已实现）
 
-- **拆分原因**：原 Task 22 同时覆盖引擎与 Celery，但持久化/草稿/发布/运行记录 API 是没有归属的前置项。拆为 22A（本段，已实现）与 22B（引擎 + 审批 + Celery，待做）；22A 不实现执行逻辑。
+- **拆分原因**：原 Task 22 同时覆盖引擎与 Celery，但持久化/草稿/发布/运行记录 API 是没有归属的前置项。拆为 22A（本段，已实现）与 22B（引擎 + 审批 + Celery，见下段）；22A 不实现执行逻辑。
 - **文件**：`app/schemas/workflow.py`、`app/repositories/workflow_repo.py`、`app/services/{workflow_service,run_service}.py`、`app/api/v1/{workflows,runs}.py`、`app/api/v1/router.py`；复用既有 `workflow_versions`/`workflow_runs`/`workflow_node_runs` 表，**不新增迁移**。
 - **草稿约定**：草稿存为 `workflow_versions.version = 0`（每工作流一条，可改）；`version >= 1` 为不可变发布快照。创建即建空草稿；PATCH 只改元数据与草稿；详情优先返回草稿；`/versions` 只列发布版本。
 - **发布**：`SELECT ... FOR UPDATE` 锁工作流行 → 校验草稿 → 已发布最大版本 +1 → 深拷贝插入快照 → 更新 `current_version/status` → 单次 commit → 审计 `workflow.publish`。校验失败抛 400 `WorkflowValidationError`，`detail.errors` 原样进响应 `data`；失败路径不 commit，由请求会话关闭回滚（**不要**在 service 内 `rollback()`，测试使用外层共享事务）。
@@ -2046,6 +2046,20 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - **响应字段**：`WorkflowRunOut` 带 `workflow_version`（版本号）与 `root_span_id`；`WorkflowNodeRunOut` 带 `span_id`/`heartbeat_at`，供 Task 25 做 trace 跳转与卡死识别。列表 `last_run` 用窗口函数一次取回，避免 N+1。
 - **依赖变更**：`app/main.py` 的 `AppError` 响应包由固定 `"data": None` 改为 `"data": exc.detail`，使发布校验明细可见；既有响应包测试仍通过，detail 均为校验/元数据，不含密钥。
 - **测试**：`tests/integration/test_workflows_api.py` 13 条，覆盖 CRUD/草稿、权限矩阵、跨租户 404、校验报告关键错误、发布不可变版本、非法草稿 400 后状态不变、运行预插与不执行、列表过滤、取消状态机、审计与不存在资源。新增 13 条，全量 **365 passed**；无迁移，`alembic check` 无需运行。
+
+### Task 22B 代码级展开（已实现）
+
+- **文件与边界**：新增 `app/workflow/engine.py`、`app/worker.py`、`app/tasks/{__init__,workflow_tasks}.py`；扩展 `app/services/run_service.py`、`app/api/v1/runs.py`、`app/schemas/workflow.py`、`app/core/config.py`、`app/tools/registry.py`、`docker/compose/docker-compose.yml`。复用 22A 的三张运行表，**不新增迁移**。
+- **执行入口**：`WorkflowEngine(session, run_id)` 以 `SELECT ... FOR UPDATE` 读取运行行（worker 路径唯一允许的无租户读），再按 `run.tenant_id` 加载版本/工作流/节点行；缺行时补 `pending`。首次执行 `pending → running` 并只写一次 `started_at`；终态运行幂等返回；`waiting_approval` 命中等待节点时直接返回，不重复执行。
+- **图遍历**：从 start（或审批恢复传入的 `resume_node_id`）BFS 推进；`succeeded/skipped` 节点不重跑；condition 以落库 `output.result` 选择 `when=true/false` 分支；未被选中的节点在收敛时标 `skipped`；end 输出单前驱输出；每个节点执行前重读 run 状态，取消后立即停止，不覆盖取消服务写入的终态。
+- **节点语义**：start 输出 `run.input`；agent 按同租户 `status=active` 解析并复用 Agent API 的 `LLMClient`，通过 `run_agent(..., trace_handle, span_handle)` 执行；tool 使用 `ToolContext(idempotency_key="{run_id}:{node_id}")`；condition 用受限表达式求值；approval 同时把 run/节点置 `waiting_approval` 并写入 `title/approvers/created_at/expires_at/decision`，关闭节点 span 但**保持 trace 打开**；end 汇总前驱输出。
+- **trace 生命周期**：首跑开 `workflow.{name}`（`source="workflow_run"`）并落库 `trace_id/root_span_id`；恢复时用落库 ID 重建 `TraceHandle`，绝不重复开 trace；成功/失败/取消关闭 trace；图无法加载时也尽力关闭已落库 trace。所有观测调用经 `_safe` 吞异常，监控故障不影响业务结果。
+- **重试与超时**：agent/tool 默认 `max_retries=2`，其余默认 0；每次尝试独立 span，`asyncio.wait_for` 按节点 `timeout_ms` 超时；退避固定 1/4/16s；attempt 递增并提交。`retryable=False` 的错误（如工具参数错误）立即收敛，不消耗剩余预算；超时与内部异常可重试。
+- **并发与僵尸回收**：`_mark_running` 用一条条件 UPDATE 实现节点租约（仅 `pending/running/failed` 且心跳为空或超过 `workflow_stale_after_s=60s` 时成功），失败返回 `busy` 立刻让出，避免重复投递重复调用 LLM/工具；运行初始化行锁避免重复开 trace。worker 路径注入独立会话工厂，长节点每 `max(5, stale/3)` 秒续租心跳，防止活节点被误回收。`RunService.decide` 按租户锁 run + 等待节点，串行化并发审批；`expire_waiting_approvals` 用 `FOR UPDATE SKIP LOCKED` 锁 run 后复核状态；`find_stale_runs` 取节点/运行心跳最大值早于阈值的 running 运行。
+- **审批 API**：`POST /runs/{id}/approve|reject`，任一经认证用户可调用，角色必须显式出现在节点 `approvers`（admin 不隐式通过）；通过后节点 `succeeded`/run `running`、审计 `workflow.approve` 并以 `resume_node_id` 入队；拒绝后节点 `failed(approval_rejected)`/run `failed`/其余非终态节点 `skipped`、审计 `workflow.reject`。跨租户与缺失 404，非等待状态与重复审批 409。
+- **Celery**：`worker.py` 建 `edgepilot` 应用，broker 缺省回退 `rabbitmq_url`，`task_ignore_result/acks_late/prefetch=1`，路由 `workflow.*→q.workflow`、`ingest.*→q.ingest`、`notify.*→q.notify`；beat 每 60s 扫审批超时、每 30s 重投僵尸运行；worker 用进程内唯一常驻事件循环线程承载 asyncpg 池。22A 的运行创建路径在 22B 中改为提交与审计后尽力入队（broker 故障仅告警）；`execute_run` 捕获异常并保留 running 交给 stale 回收；`celery_enabled=False` 时入队直接返回 False。compose 新增 `scheduler`（profile `app`）运行 beat。
+- **测试**：`test_workflow_engine.py` 12 条（审批暂停/恢复、拒绝、条件分支、重试与退避、二次调用不重复执行、取消、工具幂等键、监控故障隔离、trace 只落库一次、原子租约 busy/过期恢复、不可重试工具、list 输出经 API）、`test_workflow_timeout.py` 4 条（节点超时、未到期不处理、审批超时审计、stale 发现）、`test_workflow_approval_api.py` 4 条（通过/审计/入队、非审批人与 admin 403、拒绝与跳过、跨租户/404/非等待 409）、`test_worker_config.py` 4 条（路由/beat、任务名、关闭入队、入队异常吞掉）、`test_workflow_heartbeat.py` 1 条（独立会话周期续租）。新增 25 条，全量 **390 passed**；无迁移。
+- **有意保留**：不接真实 broker 做端到端测试（配置/任务单测覆盖）；运行详情实时推送留到 Task 25；僵尸回收暂无重试次数上限；心跳续租仅在 worker 路径启用；`scheduler` 仅随 `app` profile 启动。
 
 ---
 
