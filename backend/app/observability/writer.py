@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from app.observability.live import LiveLayer
 from app.observability.models.event import TraceEvent
 from app.observability.models.llm_call import LLMCall
+from app.observability.models.retrieval import RetrievalRecord as RetrievalRecordModel
 from app.observability.models.span import Span
 from app.observability.models.tool_call import ToolCall
 from app.observability.models.trace import Trace
@@ -31,25 +32,9 @@ from app.observability.models.trace import Trace
 logger = logging.getLogger(__name__)
 
 # retrieval_records 要等 0004 迁移才建；写入前用 to_regclass 探测，缺失时跳过整批里
-# 的检索记录而不是让整批失败。
-_RETRIEVAL_TABLE = sa.table(
-    "retrieval_records",
-    sa.column("tenant_id"),
-    sa.column("span_id"),
-    sa.column("query"),
-    sa.column("rewritten_query"),
-    sa.column("retrieval_strategy"),
-    sa.column("embedding_model"),
-    sa.column("vector_store"),
-    sa.column("reranker_model"),
-    sa.column("top_k"),
-    sa.column("similarity_threshold"),
-    sa.column("retrieved_documents"),
-    sa.column("reranked_documents"),
-    sa.column("final_context"),
-    sa.column("duration_ms"),
-    sa.column("error"),
-)
+# 的检索记录而不是让整批失败。写入使用 ORM 表，保证 asyncpg 拿到正确类型
+# （尤其是 JSONB 数组），列集合与 _RETRIEVAL_COLUMNS 一致、不含 attempt。
+_RETRIEVAL_TABLE = RetrievalRecordModel.__table__
 
 _LLM_JSON_FIELDS = (
     "tool_definitions",

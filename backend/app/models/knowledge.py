@@ -37,6 +37,12 @@ class KnowledgeChunk(TenantMixin, Base):
             text("to_tsvector('simple', content)"),
             postgresql_using="gin",
         ),
+        Index(
+            "ix_knowledge_chunks_content_trgm",
+            "content",
+            postgresql_using="gin",
+            postgresql_ops={"content": "gin_trgm_ops"},
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)

@@ -20,6 +20,7 @@ argon2-cffi
 PyJWT
 cryptography
 httpx
+python-multipart
 pytest
 pytest-asyncio
 jinja2

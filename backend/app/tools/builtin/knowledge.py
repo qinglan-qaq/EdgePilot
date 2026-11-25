@@ -1,12 +1,12 @@
 """知识库检索内置工具。
 
-MVP 阶段尚未接入向量化模型（embedding），这里只做 **真实表** ``knowledge_chunks``
-上的关键词匹配（ILIKE）。没有命中就返回空列表，不编造片段。
+复用平台 RAG 的混合检索服务（pgvector + 全文 + pg_trgm → RRF），输出仍包含
+``chunk_id/source/snippet/score``。没有命中时返回空列表 + ``note``/
+``empty_reason``，绝不编造文档；没有 embedding/reranker 时在 ``degraded`` 中显式
+标记，不伪造任何分数。
 """
 
-from sqlalchemy import or_, select
-
-from app.models.knowledge import KnowledgeChunk
+from app.rag.service import RagService
 from app.tools.builtin.common import empty_payload, query_scope
 from app.tools.registry import ToolContext, ToolRegistry
 
@@ -27,55 +27,59 @@ SEARCH_OUTPUT_SCHEMA: dict = {
         "items": {"type": "array", "items": {"type": "object"}},
         "count": {"type": "integer"},
         "note": {"type": "string"},
+        "empty_reason": {"type": ["string", "null"]},
+        "degraded": {"type": "array", "items": {"type": "string"}},
+        "strategy": {"type": "string"},
     },
 }
 
 
-def _escape_like(value: str) -> str:
-    """转义 ILIKE 通配符，避免用户输入被当成模式。"""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 async def search_knowledge_base(args: dict, ctx: ToolContext | None) -> dict:
-    """在 knowledge_chunks 中按关键词检索知识片段。"""
+    """在 knowledge_chunks 上执行真实混合检索。"""
     async with query_scope(ctx) as scope:
         if scope.session is None:
-            return empty_payload(scope.note)
-
-        pattern = f"%{_escape_like(args['query'])}%"
-        stmt = (
-            select(KnowledgeChunk)
-            .where(
-                KnowledgeChunk.tenant_id == scope.tenant_id,
-                or_(
-                    KnowledgeChunk.content.ilike(pattern, escape="\\"),
-                    KnowledgeChunk.title.ilike(pattern, escape="\\"),
-                ),
+            return empty_payload(
+                scope.note,
+                empty_reason="no_context",
+                degraded=[],
+                strategy="unavailable",
             )
-            .order_by(KnowledgeChunk.doc_id, KnowledgeChunk.chunk_no)
-            .limit(int(args.get("top_k") or 5))
+
+        outcome = await RagService(scope.session).search(
+            tenant_id=scope.tenant_id,
+            query=args["query"],
+            top_k=int(args.get("top_k") or 5),
         )
-        chunks = (await scope.session.scalars(stmt)).all()
         items = [
             {
-                "chunk_id": chunk.id,
-                "doc_id": chunk.doc_id,
-                "title": chunk.title,
-                "source": chunk.source,
-                "chunk_no": chunk.chunk_no,
-                "snippet": chunk.content[:300] + ("…" if len(chunk.content) > 300 else ""),
-                "metadata": chunk.meta or {},
+                "chunk_id": item["chunk_id"],
+                "doc_id": item["doc_id"],
+                "title": item["title"],
+                "source": item["source"],
+                "chunk_no": item["chunk_no"],
+                "snippet": item["snippet"],
+                "score": item["score"],
+                "scores": item["scores"],
             }
-            for chunk in chunks
+            for item in outcome.results
         ]
-        note = "关键词匹配（ILIKE）；向量检索尚未接入，未命中返回空列表"
-        return {"items": items, "count": len(items), "note": note}
+        note = outcome.note
+        if outcome.empty_reason:
+            note = f"{note}（empty_reason={outcome.empty_reason}）"
+        return {
+            "items": items,
+            "count": len(items),
+            "note": note,
+            "empty_reason": outcome.empty_reason,
+            "degraded": outcome.degraded,
+            "strategy": outcome.strategy,
+        }
 
 
 def register(registry: ToolRegistry) -> None:
     registry.register(
         "search_knowledge_base",
-        "1.0.0",
+        "1.1.0",
         SEARCH_INPUT_SCHEMA,
         SEARCH_OUTPUT_SCHEMA,
         search_knowledge_base,
@@ -83,5 +87,5 @@ def register(registry: ToolRegistry) -> None:
         timeout_ms=10000,
         max_retries=1,
         side_effect=False,
-        description="在 knowledge_chunks 中按关键词检索知识片段（向量检索暂未接入）",
+        description="在知识库中执行混合检索（向量/全文/trigram + RRF），未命中返回空列表",
     )

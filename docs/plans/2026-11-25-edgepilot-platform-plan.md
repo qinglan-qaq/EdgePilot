@@ -1991,6 +1991,22 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - 事件 API：`GET /events`（分页 + start/end/node/device/type/severity/status 筛选，occurred_at desc,id desc）、`GET /events/{id}`、`POST /events/{id}/ack`（admin/operator，new→acked 幂等，旁路审计 `event.ack`）、`GET /events/{id}/snapshot`（FileResponse image/jpeg|png，缺失/穿越 404）。viewer 可读、写接口 403。
 - 测试：`tests/unit/vision/test_vision_rules.py`（17 条，几何/越线/去重/dwell/count/detector/截图降级与穿越）、`tests/integration/test_events_api.py`（9 条，筛选分页/租户隔离/ack 权限与幂等/快照流与 404/ingest 幂等与降级标记）。全量 202 passed，`alembic check` 无漂移。
 
+### Task 20 代码级展开（已实现）
+
+- 分层与文件：`app/rag/{errors,parsing,chunking,embedding,reranking,retriever,service}.py`；API/服务/仓储分别落在 `api/v1/knowledge.py`、`services/knowledge_service.py`、`repositories/knowledge_repo.py`，未把 SQL 写进路由。
+- 解析：`.md/.txt` 按 UTF-8 解码，PDF 用 PyMuPDF 逐页抽取文本；空文档、乱码/损坏 PDF、`.docx`（未安装 python-docx）均抛显式 `AppError`，不返回空壳成功。上传入口分块读取，超过 10MB 或 0 字节直接 400。
+- 分块：按 Markdown 标题切段，相邻小段先合并成块，再在块内做 400–600 字、目标 500 字、重叠 80 字的滑窗；`start/end` 保留原文偏移，`chunk_no` 从 0 递增，标题路径写入 `meta.heading`。演示文档实测块长 469/450/411 字，均在目标区间。
+- 入库幂等：`doc_id = sha256("{tenant_id}:{filename}:{text}")[:32]`；重复上传返回已有块数与真实 embedding 状态，不重复写。写完统一 commit，异常 rollback，不留半截数据；审计只记录 doc_id/文件名/块数，不含正文。
+- 向量/重排：embedding provider 接口固定 1024 维，默认 `NullEmbeddingProvider`；reranker 默认 `NullRerankerProvider`。没有模型时 `embedding=NULL`、跳过向量腿，返回 `degraded=["vector_unavailable","reranker_unavailable"]` 与中文说明；**不生成随机/哈希/假向量，不伪造 cosine/rerank 分数**。
+- 检索：pgvector `1 - cosine_distance`（仅真实 embedding 存在时）、`ts_rank(to_tsvector('simple', content), plainto_tsquery(...))`、`word_similarity(query, content)` 三腿各取 Top20，RRF（k=60）融合后取 Top8；返回 `chunk_id/doc_id/title/source/chunk_no/snippet/score/scores{vector,fts,trigram,rrf,rerank}`，`score` 默认即真实 RRF 值。空库返回 `results=[]` 且 `empty_reason="knowledge_base_empty"`，有库无命中返回 `empty_reason="no_match"`，两种情况都不生成文档。
+- 租户与权限：所有 `knowledge_chunks` 查询/删除都带 `tenant_id`；跨租户删除返回 404。`POST /knowledge/documents`、`DELETE /knowledge/documents/{doc_id}` 仅 admin/operator，viewer 403；`GET /knowledge/documents` 与 `POST /knowledge/search` 登录用户可读。
+- 工具复用：`search_knowledge_base` 改为调用 `RagService.search`，输出仍含 `chunk_id/source/snippet/score`，并新增 `scores/empty_reason/degraded/strategy/note`；无命中返回空列表与说明，不编造引用。
+- 观测接线：`HybridRetriever` 开 `retrieval.hybrid`（`span_type="retrieval"`）并 `record_retrieval`；`0004_obs_retrieval.py` 建 `retrieval_records` 与 `pg_trgm` GIN 索引，未新增业务表、未建跨表外键。详细字段见观测计划 Task 10 展开。
+- Seed：`scripts/seed_demo.py` 使用稳定 `dedup_key/node_key/doc_id`，重复运行幂等；200 条事件严格近 24h，区域分布 90/60/35/15，2 个节点、4 台相机，仅 20 条事件挂 Pillow 生成的 `DEMO SNAPSHOT` 占位图，事件 payload 含 `{"simulated": true, "seed": "demo"}`。3 篇中文演示文档走真实 RAG 入库。
+- 测试：`tests/unit/rag/test_rag_units.py` 7 条（解析/PDF/拒绝格式/分块范围与重叠/标题/RRF 纯函数）；`tests/integration/test_rag.py` 11 条（上传列表检索、租户隔离、重复幂等、显式错误、权限与跨租户 404、空库/无命中、top_k 校验、手写真实向量腿、真实 reranker 分数、工具复用、英文 FTS、seed 幂等可检索）；`tests/integration/observability/test_retrieval_recorded.py` 3 条。新增 21 条全部通过，全量 **223 passed**，`alembic upgrade head` 至 `0004_obs_retrieval` 后 `alembic check` 输出 `No new upgrade operations detected.`。
+- 实测 seed 两次：第一次 `events_total=200, snapshot_paths=20, docs=3, docs_created=3, chunks=3`；第二次 `events_created=0, docs_created=0, chunks=3`，无翻倍。真实库查询确认 200 条事件、20 个非空 `snapshot_path`、20 张演示 PNG、3 个知识块且 `embedding IS NULL`。
+- 真实库 TestClient 检索（覆盖 `get_current_user` 为 viewer，演示库未建用户）：`消防通道` → `chunk_id=10, score=0.01639344262295082`（`trigram=0.8`，`vector/fts/rerank=null`）；`人群聚集` → `chunk_id=11, score=0.01639344262295082`。均返回 `strategy="hybrid_rrf"` 与降级说明，无伪造分数。
+
 ---
 
 
