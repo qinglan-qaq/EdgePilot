@@ -757,3 +757,98 @@ def test_ordering_rejects_non_numeric_and_non_string_pairs():
 
     with pytest.raises(ExpressionError):
         evaluate_expression("$input.x < true", {"input": {"x": 1}})
+
+
+# ------------------------------------------------------- 表达式节点引用与保留 id
+
+
+def test_compiled_expression_exposes_referenced_nodes_once():
+    compiled = compile_expression(
+        "($input.x > 0 and $plan.output.n > 1) or $report.output.ok == true"
+    )
+
+    assert compiled.referenced_nodes == ("plan", "report")
+    assert compile_expression("$input.x > 0").referenced_nodes == ()
+
+
+def test_expression_reference_to_unknown_node_rejected():
+    dsl = six_node_dsl()
+    dsl["nodes"][1]["input_map"]["ghost"] = "$ghost.output.value"
+
+    report = validate_dsl(dsl)
+
+    issue = issue_for(report, "unknown_expression_node")
+    assert issue.node_id == "plan"
+    assert "ghost" in issue.message
+
+
+def test_expression_reference_to_downstream_node_rejected():
+    dsl = six_node_dsl()
+    dsl["nodes"][1]["input_map"]["later"] = "$report.output.summary"
+
+    report = validate_dsl(dsl)
+
+    issue = issue_for(report, "forward_expression_reference")
+    assert issue.node_id == "plan"
+    assert "report" in issue.message
+
+
+def test_expression_self_reference_rejected():
+    dsl = six_node_dsl()
+    dsl["nodes"][1]["input_map"]["self"] = "$plan.output.value"
+
+    report = validate_dsl(dsl)
+
+    issue_for(report, "forward_expression_reference")
+
+
+def test_expression_reference_across_parallel_branches_rejected():
+    dsl = {
+        "nodes": [
+            {"id": "start", "type": "start", "timeout_ms": 1000},
+            {"id": "fanout", "type": "agent", "agent": "planner", "timeout_ms": 1000},
+            {"id": "a", "type": "agent", "agent": "planner", "timeout_ms": 1000},
+            {
+                "id": "b",
+                "type": "agent",
+                "agent": "planner",
+                "timeout_ms": 1000,
+                "input_map": {"from_a": "$a.output.value"},
+            },
+            {"id": "merge", "type": "agent", "agent": "planner", "timeout_ms": 1000},
+            {"id": "end", "type": "end", "timeout_ms": 1000},
+        ],
+        "edges": [
+            {"from": "start", "to": "fanout"},
+            {"from": "fanout", "to": "a"},
+            {"from": "fanout", "to": "b"},
+            {"from": "a", "to": "merge"},
+            {"from": "b", "to": "merge"},
+            {"from": "merge", "to": "end"},
+        ],
+    }
+
+    report = validate_dsl(dsl)
+
+    issue = issue_for(report, "forward_expression_reference")
+    assert issue.node_id == "b"
+
+
+def test_node_id_input_is_reserved():
+    dsl = minimal_dsl(
+        {"id": "input", "type": "agent", "agent": "planner", "timeout_ms": 1000}
+    )
+
+    report = validate_dsl(dsl)
+
+    assert issue_for(report, "reserved_node_id").node_id == "input"
+
+
+def test_node_id_cannot_start_with_underscore():
+    dsl = minimal_dsl(
+        {"id": "_private", "type": "agent", "agent": "planner", "timeout_ms": 1000}
+    )
+
+    report = validate_dsl(dsl)
+
+    assert issue_for(report, "invalid_node_id").node_id == "_private"

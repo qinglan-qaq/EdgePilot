@@ -15,10 +15,13 @@ NODE_TYPES = ("start", "agent", "tool", "condition", "approval", "end")
 ROLES = ("viewer", "operator", "admin")
 
 # 节点 id 必须是合法标识符，便于表达式 ``$<node_id>.output`` 无歧义引用。
-NODE_ID_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+# 不允许下划线开头：表达式访问下划线字段会被安全白名单拒绝，避免出现
+# "合法但永远无法被引用"的节点 id。
+NODE_ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
 NODE_ID_RE = re.compile(NODE_ID_PATTERN)
 NODE_ID_MAX_LENGTH = 64
 MAX_NODE_ID_LENGTH = NODE_ID_MAX_LENGTH
+RESERVED_NODE_IDS = frozenset({"input"})
 
 
 def is_valid_node_id(value: object) -> bool:
@@ -76,6 +79,7 @@ __all__ = [
     "NODE_ID_PATTERN",
     "NODE_ID_RE",
     "NODE_TYPES",
+    "RESERVED_NODE_IDS",
     "ROLES",
     "dsl_hash",
     "edges_of",

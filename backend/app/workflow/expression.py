@@ -45,10 +45,15 @@ class ExpressionError(ValueError):
 
 @dataclass(frozen=True)
 class CompiledExpression:
-    """已通过白名单校验的表达式，可重复对多个上下文求值。"""
+    """已通过白名单校验的表达式，可重复对多个上下文求值。
+
+    ``referenced_nodes`` 记录表达式读取的节点 id（``$input`` 不计入），
+    供校验器检查引用是否存在、是否位于当前节点上游。
+    """
 
     source: str
     _tree: ast.AST
+    referenced_nodes: tuple[str, ...] = ()
 
     def evaluate(self, context: dict[str, Any]) -> Any:
         if not isinstance(context, dict):
@@ -83,7 +88,11 @@ def compile_expression(source: str) -> CompiledExpression:
         )
 
     _validate_ast(body, source)
-    return CompiledExpression(source=source, _tree=body)
+    return CompiledExpression(
+        source=source,
+        _tree=body,
+        referenced_nodes=_collect_referenced_nodes(body),
+    )
 
 
 def evaluate_expression(source: str, context: dict[str, Any]) -> Any:
@@ -253,6 +262,23 @@ def _attribute_parts(node: ast.Attribute, source: str) -> list[str]:
         f"非法字段路径: ${'.'.join(parts)}；只允许 $input 或 $节点id.output",
         source=source,
     )
+
+
+def _collect_referenced_nodes(tree: ast.AST) -> tuple[str, ...]:
+    """按源码顺序收集表达式读取的节点 id；整条属性链只记根节点一次。"""
+    names: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(node, ast.Attribute):
+            parts = _attribute_parts(node, source="")
+            if parts[0] != "input":
+                names.add(parts[0])
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    walk(tree)
+    return tuple(sorted(names))
 
 
 # ------------------------------------------------------------------- 求值

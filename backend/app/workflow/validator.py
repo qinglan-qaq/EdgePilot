@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import heapq
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,7 @@ from app.workflow.dsl import (
     NODE_ID_MAX_LENGTH,
     NODE_ID_RE,
     NODE_TYPES,
+    RESERVED_NODE_IDS,
     ROLES,
 )
 from app.workflow.expression import ExpressionError, compile_expression
@@ -179,6 +181,12 @@ def validate_dsl(
         end_ids,
     )
     _validate_node_semantics(report, nodes)
+    _validate_expression_references(
+        report,
+        nodes,
+        node_by_id,
+        graph["reverse"],
+    )
     _validate_known_refs(report, nodes, known_agents, known_tools)
 
     return report
@@ -220,8 +228,14 @@ def _validate_node_fields(
             ):
                 report.add_error(
                     "invalid_node_id",
-                    f"节点 id 非法（需匹配 ^[A-Za-z_][A-Za-z0-9_]*$ 且不超过 "
+                    f"节点 id 非法（需匹配 ^[A-Za-z][A-Za-z0-9_]*$ 且不超过 "
                     f"{NODE_ID_MAX_LENGTH} 字符）: {node_id}",
+                    node_id,
+                )
+            elif node_id in RESERVED_NODE_IDS:
+                report.add_error(
+                    "reserved_node_id",
+                    f"节点 id {node_id!r} 为保留字，无法在表达式中引用",
                     node_id,
                 )
             if node_id in seen_ids:
@@ -596,6 +610,61 @@ def _validate_node_semantics(
             _validate_input_map(report, node_id, node)
 
 
+def _validate_expression_references(
+    report: ValidationReport,
+    nodes: list[dict[str, Any]],
+    node_by_id: dict[str, dict[str, Any]],
+    reverse: dict[str, list[str]],
+) -> None:
+    """表达式只能读取已存在且位于当前节点上游的节点输出。
+
+    没有任何执行顺序保证的跨分支引用会在运行时拿到空上下文，因此在
+    发布前直接拒绝；``$input`` 不受此限制。
+    """
+    for node in nodes:
+        node_id = _issue_node_id(node)
+        if node_id is None or node_id not in node_by_id:
+            continue
+        ancestors = _walk(node_id, reverse) - {node_id}
+        seen: set[str] = set()
+        for source, field in _iter_node_expressions(node):
+            try:
+                compiled = compile_expression(source)
+            except ExpressionError:
+                continue
+            for ref in compiled.referenced_nodes:
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                if ref not in node_by_id:
+                    report.add_error(
+                        "unknown_expression_node",
+                        f"节点 {node_id} 的 {field} 引用了不存在的节点 {ref!r}",
+                        node_id,
+                    )
+                elif ref not in ancestors:
+                    report.add_error(
+                        "forward_expression_reference",
+                        f"节点 {node_id} 的 {field} 只能引用上游节点，"
+                        f"{ref!r} 不是其上游",
+                        node_id,
+                    )
+
+
+def _iter_node_expressions(node: dict[str, Any]) -> Iterator[tuple[str, str]]:
+    node_type = node.get("type")
+    if node_type == "condition":
+        expression = node.get("expression")
+        if isinstance(expression, str):
+            yield expression, "expression"
+    elif node_type in ("agent", "tool"):
+        input_map = node.get("input_map")
+        if isinstance(input_map, dict):
+            for key, value in input_map.items():
+                if isinstance(value, str) and value.startswith("$"):
+                    yield value, f"input_map[{key!r}]"
+
+
 def _valid_approval(node: dict[str, Any]) -> bool:
     title = node.get("title")
     approvers = node.get("approvers")
@@ -690,7 +759,7 @@ def _validate_known_refs(
 
 
 def assert_valid(report: ValidationReport) -> None:
-    """无效报告直接抛 400；有效报告原样返回。"""
+    """报告无效时抛 400；有效时直接返回。"""
     if report.valid:
         return
     raise WorkflowValidationError(
