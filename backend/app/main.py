@@ -1,3 +1,4 @@
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,8 @@ from app.core.metrics import (
     render,
 )
 from app.core.middleware import RequestIdMiddleware, request_id_var
+
+logger = logging.getLogger(__name__)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -80,10 +83,45 @@ def create_app() -> FastAPI:
         set_writer(BatchWriter(get_session_factory(),
                                live=LiveLayer(s.redis_url, s.obs_live_ttl_seconds)))
         await get_tracer().collector.start()
+
+        sweeper = None
+        mqtt_enabled = False
+        if s.mqtt_enabled:
+            from app.messaging.mqtt.client import start_mqtt_service
+            from app.messaging.mqtt.sweeper import NodeSweeper
+
+            mqtt_enabled = True
+            try:
+                await start_mqtt_service()
+            except Exception:  # noqa: BLE001 - MQTT 不得阻断 API 启动
+                logger.exception("MQTT 服务启动失败，API 继续启动")
+            try:
+                sweeper = NodeSweeper(
+                    get_session_factory(),
+                    offline_after_s=s.node_offline_after_s,
+                    interval_s=s.node_sweep_interval_s,
+                )
+                await sweeper.start()
+            except Exception:  # noqa: BLE001 - 扫描任务失败不影响 API
+                logger.exception("节点离线扫描启动失败")
+                sweeper = None
+
         try:
             yield
         finally:
-            # 先停采集任务（会写完最后一批），再关闭连接池
+            # 先停 MQTT/扫描（外部消息入口），再停 tracer 采集，最后才关连接池。
+            if sweeper is not None:
+                try:
+                    await sweeper.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("节点离线扫描停止失败")
+            if mqtt_enabled:
+                from app.messaging.mqtt.client import stop_mqtt_service
+
+                try:
+                    await stop_mqtt_service()
+                except Exception:  # noqa: BLE001
+                    logger.exception("MQTT 服务停止失败")
             await get_tracer().collector.stop()
 
     app = FastAPI(title="EdgePilot API", version="0.1.0", lifespan=lifespan)

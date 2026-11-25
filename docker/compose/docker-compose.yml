@@ -69,6 +69,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       RABBITMQ_URL: amqp://edgepilot:edgepilot@rabbitmq:5672//
       MQTT_HOST: mosquitto
+      MQTT_ENABLED: "true"
       OBS_ENABLED: "true"
       OBS_CAPTURE_MODE: REDACTED
       LLM_MODE: mock

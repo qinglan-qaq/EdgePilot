@@ -1947,6 +1947,19 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - 按主题持久化：register / event / task ack 失败入队；heartbeat / status 不持久化（过期数据无补发价值）。
 - 测试与入口：`edge-agent/tests/test_outbox.py` 覆盖 5 分钟断网不丢不重、失败重试不重复、离线注册/事件补发、5s 心跳字段、LWT 与退避；`make test-edge` 独立运行，不依赖网络或数据库。
 
+### Task 18 代码级展开（已实现）
+
+- 分层与文件：`app/messaging/mqtt/{topics,dedupe,handlers,client,sweeper}.py` 承担接入层；节点/设备走 `api/v1/{nodes,devices}.py` → `services/{node,device}_service.py` → `repositories/{node,device}_repo.py` → 既有模型。**未新增表或迁移**，`edge_nodes` 沿用 `(tenant_id,node_key)`、`vision_events` 沿用 `(tenant_id,dedup_key)` 唯一约束。
+- 主题与订阅：上行 `edge/{key}/register`、`heartbeat`、`status`、`event`、`task/ack`；控制面订阅 `edge/+/register`(QoS1)、`$share/cp/edge/+/heartbeat`(QoS0)、`edge/+/status`(QoS1)、`edge/+/event`(QoS1)、`edge/+/task/ack`(QoS1)。下行固定 `edge/{key}/cmd/{action}`。
+- 去重：Redis `SET NX EX`，TTL 取 `MQTT_DEDUPE_TTL_SECONDS`（默认 86400），键含租户 `mqtt:dedupe:{tenant}:{node}:{msg}`；Redis 异常时切换进程内有界 LRU 并熔断 30s，handler 可注入 `MemoryDedupe` 测试。视觉事件另由 `dedup_key` 唯一约束兜底。
+- handler 语义：register 按 `(tenant_id,node_key)` 幂等 upsert，重复 `msg_id` 返回 duplicate、新消息更新版本/名称/IP；heartbeat 原样保存指标（剔除 `msg_id/sent_at/node_key` 信封字段）并刷新 `last_heartbeat_at`；status 接受 LWT 裸字符串 `offline/online`；event 校验设备属于同租户同节点后入库；task ack 仅去重与日志，工作流接线留给 P6。禁用节点不会被注册/心跳/上线消息复活。
+- 客户端与背压：paho `CallbackAPIVersion.VERSION2`，回调线程只把消息塞进容量 1000 的 `asyncio.Queue`，异步 worker 逐条处理，每条独立 session 并在异常时 rollback；`connect_async` + `reconnect_delay_set(1, 30)`，启动/断连均不阻断 API；`publish_command` 自动补 `msg_id/sent_at`，未连接返回 False 由 API 转 503。
+- 离线扫描：`NodeSweeper` 每 5s 调用可独立测试的 `sweep_once`，仅把 `last_heartbeat_at < now-15s` 的 online 节点置 offline，disabled 与无心跳节点不动。
+- 租户边界：MQTT 线程无请求上下文，统一显式使用 `settings.tenant_default_id`（MVP）；HTTP 侧租户来自 JWT，跨租户与不存在统一 404。
+- API 与审计：节点列表支持 status 过滤与分页，提供详情、metrics、PATCH（name/labels/disabled）与 commands；设备提供列表、创建、更新、删除、probe。写接口限 admin/operator，viewer 403；命令 `task_id` 默认 uuid4，`traceparent` 优先级为请求体 → 请求头 → 活动 trace → 新生成；审计 `node.command` / `device.probe` 走旁路，失败不阻断主流程。
+- 配置与生命周期：新增 `MQTT_ENABLED`(默认 false)、`MQTT_DEDUPE_TTL_SECONDS`、`NODE_OFFLINE_AFTER_S`(15)、`NODE_SWEEP_INTERVAL_S`(5)；compose 的 api 服务显式 `MQTT_ENABLED=true`；lifespan 仅在开启时启动 MQTT/sweeper，启动失败只记日志，停机顺序为先 sweeper/MQTT 再 tracer。
+- 测试：`tests/integration/test_heartbeat.py` 覆盖注册幂等/版本更新/重复消息/租户隔离、心跳指标、15s 扫描边界、禁用不复活、LWT 上下线、事件去重与任务 ack；`tests/integration/test_nodes.py` 覆盖重复注册仅 1 条、跨租户 404、指令发布与审计、viewer 403、禁用 409、MQTT 503、metrics、PATCH 启停用、设备 CRUD/probe。下行测试通过依赖覆盖注入 fake publisher，不依赖 broker。
+
 ---
 
 ## P5 视觉与 RAG（契约级）

@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     mqtt_port: int = 1883
     mqtt_username: str = ""
     mqtt_password: str = ""
+    # 默认关闭：单元/集成测试与本地 API 不因 broker 缺失而受影响。
+    mqtt_enabled: bool = False
+    mqtt_dedupe_ttl_seconds: int = 86400
+    node_offline_after_s: float = 15.0
+    node_sweep_interval_s: float = 5.0
 
     jwt_secret: str = "dev-only-change-me"
     # 独立的密钥加密密钥（Fernet）；生产必须由 SECRET_ENCRYPTION_KEY 提供。
