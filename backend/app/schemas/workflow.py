@@ -104,6 +104,8 @@ class WorkflowNodeRunOut(BaseModel):
     output: dict | None
     approval: dict | None
     error: str | None
+    span_id: str | None = None
+    heartbeat_at: datetime | None = None
     started_at: datetime | None
     finished_at: datetime | None
 
@@ -113,6 +115,7 @@ class WorkflowRunOut(BaseModel):
     workflow_id: int
     workflow_name: str
     workflow_version_id: int
+    workflow_version: int
     status: str
     trigger_type: str
     trigger_payload: dict | None
@@ -120,6 +123,7 @@ class WorkflowRunOut(BaseModel):
     output: dict | None
     error: str | None
     trace_id: str | None
+    root_span_id: str | None = None
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

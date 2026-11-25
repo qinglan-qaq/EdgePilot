@@ -194,7 +194,7 @@ class WorkflowRepo(BaseRepository[Workflow]):
         *,
         workflow_id: int | None = None,
         status: str | None = None,
-    ) -> tuple[list[tuple[WorkflowRun, str, int]], int]:
+    ) -> tuple[list[tuple[WorkflowRun, str, int, int]], int]:
         where = [
             WorkflowRun.tenant_id == tenant_id,
             WorkflowVersion.tenant_id == tenant_id,
@@ -220,6 +220,7 @@ class WorkflowRepo(BaseRepository[Workflow]):
                 WorkflowRun,
                 Workflow.name,
                 WorkflowVersion.workflow_id,
+                WorkflowVersion.version,
             )
             .join(WorkflowVersion, WorkflowVersion.id == WorkflowRun.workflow_version_id)
             .join(Workflow, Workflow.id == WorkflowVersion.workflow_id)
@@ -228,7 +229,7 @@ class WorkflowRepo(BaseRepository[Workflow]):
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = [(run, name, wf_id) for run, name, wf_id in result.all()]
+        items = [(run, name, wf_id, version) for run, name, wf_id, version in result.all()]
         return items, total
 
     async def get_run(

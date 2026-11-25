@@ -458,12 +458,16 @@ async def test_run_creation_persists_pending_rows_without_execution(
     assert run["workflow_id"] == workflow_id
     assert run["workflow_name"] == "wf-run"
     assert run["workflow_version_id"] == version["id"]
+    assert run["workflow_version"] == 1
     assert run["trigger_type"] == "manual"
     assert run["input"] == {"question": "设备是否在线"}
+    assert run["root_span_id"] is None
     assert [node["node_id"] for node in run["nodes"]] == ["start", "zeta", "alpha"]
     assert all(node["status"] == "pending" for node in run["nodes"])
     assert all(node["attempt"] == 1 for node in run["nodes"])
     assert all(node["started_at"] is None for node in run["nodes"])
+    assert all(node["span_id"] is None for node in run["nodes"])
+    assert all(node["heartbeat_at"] is None for node in run["nodes"])
 
     db_rows = (
         await session.scalars(
@@ -535,6 +539,7 @@ async def test_run_list_filters(client, admin_token, session):
     assert by_workflow["total"] == 1
     assert by_workflow["items"][0]["id"] == run_a["id"]
     assert by_workflow["items"][0]["workflow_name"] == "wf-list-a"
+    assert by_workflow["items"][0]["workflow_version"] == 1
 
     pending = (
         await client.get("/api/v1/runs?status=pending", headers=auth_headers(admin_token))

@@ -28,6 +28,7 @@ class RunContext:
     run: WorkflowRun
     workflow_id: int
     workflow_name: str
+    workflow_version: int
     dsl: dict
     nodes: list[WorkflowNodeRun]
 
@@ -37,6 +38,7 @@ class RunListRow:
     run: WorkflowRun
     workflow_id: int
     workflow_name: str
+    workflow_version: int
 
 
 def order_node_runs(
@@ -150,8 +152,13 @@ class RunService:
             status=status,
         )
         return [
-            RunListRow(run=run, workflow_name=name, workflow_id=wf_id)
-            for run, name, wf_id in rows
+            RunListRow(
+                run=run,
+                workflow_name=name,
+                workflow_id=wf_id,
+                workflow_version=version,
+            )
+            for run, name, wf_id, version in rows
         ], total
 
     async def detail(self, run_id: int) -> RunContext:
@@ -174,6 +181,7 @@ class RunService:
             run=run,
             workflow_id=workflow.id,
             workflow_name=workflow.name,
+            workflow_version=version.version,
             dsl=version.dsl,
             nodes=order_node_runs(nodes, version.dsl),
         )

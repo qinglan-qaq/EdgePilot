@@ -31,6 +31,7 @@ def run_to_out(ctx: RunContext) -> WorkflowRunOut:
         workflow_id=ctx.workflow_id,
         workflow_name=ctx.workflow_name,
         workflow_version_id=run.workflow_version_id,
+        workflow_version=ctx.workflow_version,
         status=run.status,
         trigger_type=run.trigger_type,
         trigger_payload=run.trigger_payload,
@@ -38,6 +39,7 @@ def run_to_out(ctx: RunContext) -> WorkflowRunOut:
         output=run.output,
         error=run.error,
         trace_id=run.trace_id,
+        root_span_id=run.root_span_id,
         created_at=run.created_at,
         started_at=run.started_at,
         finished_at=run.finished_at,
@@ -71,6 +73,7 @@ async def list_runs(
                 run=row.run,
                 workflow_id=row.workflow_id,
                 workflow_name=row.workflow_name,
+                workflow_version=row.workflow_version,
                 dsl={},
                 nodes=[],
             )
