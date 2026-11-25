@@ -21,6 +21,7 @@ class LLMCall(Base, TenantMixin, TimestampMixin):
     __tablename__ = "llm_calls"
     __table_args__ = (
         Index("ix_llm_calls_created_at", "created_at"),
+        Index("ix_llm_calls_tenant_created", "tenant_id", "created_at"),
         Index("ix_llm_calls_span_attempt", "span_id", "attempt"),
         Index("ix_llm_calls_tenant_model_created", "tenant_id", "model_name", "created_at"),
     )

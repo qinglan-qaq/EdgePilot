@@ -26,6 +26,8 @@ class Span(Base, TenantMixin, TimestampMixin):
     __table_args__ = (
         Index("uq_spans_span_id", "span_id", unique=True),
         Index("ix_spans_trace_start", "trace_id", "start_time"),
+        Index("ix_spans_tenant_start", "tenant_id", "start_time"),
+        Index("ix_spans_tenant_parent", "tenant_id", "parent_span_id"),
         Index("ix_spans_tenant_type_start", "tenant_id", "span_type", "start_time"),
         Index("ix_spans_tenant_agent_start", "tenant_id", "agent_id", "start_time"),
         Index("ix_spans_tenant_tool_start", "tenant_id", "tool_id", "start_time"),

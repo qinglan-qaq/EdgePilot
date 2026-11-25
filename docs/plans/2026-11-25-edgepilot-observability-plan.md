@@ -75,7 +75,8 @@ backend/migrations/versions/
 ├─ 0002_obs_base.py              # traces / spans / trace_events
 ├─ 0003_obs_llm_tool_prompt.py   # llm_calls / tool_calls / prompt_*
 ├─ 0004_obs_retrieval.py
-└─ 0005_evaluation.py            # P8
+├─ 0005_obs_analytics_indexes.py # 分析查询索引
+└─ 0006_evaluation.py            # P8
 
 backend/tests/unit/observability/…    backend/tests/integration/observability/…
 
@@ -2069,7 +2070,7 @@ git commit -m "feat(obs): Prompt 渲染、执行记录与 Playground"
 |---|---|---|
 | 历史只读 Replay | `GET /traces/{id}/replay` 返回保存的输入/输出/事件序列（P7 已含，不重新执行） | 观测 P1–P7 |
 | Dry-run 与 Compare | 需独立 spec：数据集、确定性 evaluator、LLM judge、沙箱重执行、副作用工具 dry-run（消费平台 `tools.dry_run_supported`）、两次执行对比 | 平台 P2（`dry_run_supported`）+ 观测 P1–P7 |
-| `0005_evaluation` | `evaluation_records` 表，随 P8 spec 交付 | — |
+| `0006_evaluation` | `evaluation_records` 表，随 P8 spec 交付 | — |
 
 **不进入本期验收**：实验管理 UI、多人评测标注、LLM judge 校准。
 
@@ -2104,4 +2105,4 @@ git commit -m "feat(obs): Prompt 渲染、执行记录与 Playground"
 
 - **Spec 覆盖**：§2 数据流 → Task 1/5/6/13；§2.3 传播 → Task 12；§3 模型与状态 → Task 1/2；§4 五处埋点 → 平台 Task 9/10/12 + 本计划 Task 9/10/11；§5 表与索引 → Task 2/6/7/10；§6 管道 → Task 1/4/5/6/13；§7 Prompt → Task 7/8/17；§8 口径 → Task 14/17 + `analytics_service`；§9 API → Task 3/4/7/9/10/17；§10 前端 → Task 14–17；§11 安全与保留 → Task 5/13 + P7 保留脚本（平台 Task 27）；§12 阶段 → 本文件 Phase 划分；§13 测试 18 项 → 见上一节逐条落点（第 18 项 P8）。
 - **占位符扫描**：无 TBD/TODO；P3–P7 的"进入前展开"是 Gate 规则；P8 明确不在本期范围。
-- **接口一致性**：`Tracer.start_trace/start_span`、`SpanHandle.record_*`、`LLMCallRecord/ToolCallRecord/RetrievalRecord` 字段、`build_tree` 返回结构（`children` + `orphan`）在平台计划与本计划中同名同义；`down_revision` 链 `0001_core → 0002 → 0003 → 0004 → 0005` 无分叉。
+- **接口一致性**：`Tracer.start_trace/start_span`、`SpanHandle.record_*`、`LLMCallRecord/ToolCallRecord/RetrievalRecord` 字段、`build_tree` 返回结构（`children` + `orphan`）在平台计划与本计划中同名同义；`down_revision` 链 `0001_core → 0002 → 0003 → 0004 → 0005_obs_analytics_indexes → 0006_evaluation` 无分叉。

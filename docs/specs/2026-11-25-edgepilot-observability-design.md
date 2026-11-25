@@ -279,7 +279,8 @@ async def query_vision_events(...) -> ...: ...
 | `0002_obs_base` | `traces`、`spans`、`trace_events` | 观测 P1 |
 | `0003_obs_llm_tool_prompt` | `llm_calls`、`tool_calls`、`prompt_templates`、`prompt_versions`、`prompt_executions` | 观测 P2 |
 | `0004_obs_retrieval` | `retrieval_records` | 观测 P5 |
-| `0005_evaluation` | `evaluation_records` | P8 |
+| `0005_obs_analytics_indexes` | 分析查询的 `(tenant_id, time)` / 父子关系索引，不改表 | 观测 P7（前置） |
+| `0006_evaluation` | `evaluation_records` | P8 |
 
 **跨计划引用不建外键**（业务 ↔ 观测、观测表之间一律如此），引用完整性由应用层保证，理由见 S2。因此 `0002` 依赖 `0001` 只是 revision 链的顺序，不存在 FK 依赖。
 
