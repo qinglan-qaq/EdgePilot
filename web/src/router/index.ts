@@ -9,7 +9,13 @@ import Login from '@/views/Login.vue'
 import ModulePending from '@/views/ModulePending.vue'
 import NotFound from '@/views/NotFound.vue'
 import ObservabilityLayout from '@/views/observability/ObservabilityLayout.vue'
+import Agents from '@/views/observability/Agents.vue'
+import Models from '@/views/observability/Models.vue'
 import Overview from '@/views/observability/Overview.vue'
+import Playground from '@/views/observability/Playground.vue'
+import Prompts from '@/views/observability/Prompts.vue'
+import Settings from '@/views/observability/Settings.vue'
+import Tools from '@/views/observability/Tools.vue'
 import TraceDetail from '@/views/observability/TraceDetail.vue'
 import Traces from '@/views/observability/Traces.vue'
 import RunDetail from '@/views/RunDetail.vue'
@@ -216,66 +222,68 @@ const routes: RouteRecordRaw[] = [
           {
             path: 'tools',
             name: 'observability-tools',
-            component: ModulePending,
+            component: Tools,
             meta: {
               title: '工具分析',
               nav: true,
               roles: ALL_ROLES,
               activeMenu: '/observability/tools',
-              description:
-                '工具调用成功率、P50/P95、重试与权限拒绝分析将在 Task 17 接入真实 analytics API。',
             },
           },
           {
             path: 'models',
             name: 'observability-models',
-            component: ModulePending,
+            component: Models,
             meta: {
               title: '模型分析',
               nav: true,
               roles: ALL_ROLES,
               activeMenu: '/observability/models',
-              description:
-                'provider / model 维度的 token、成本与失败分析将在 Task 17 接入真实 analytics API。',
             },
           },
           {
             path: 'agents',
             name: 'observability-agents',
-            component: ModulePending,
+            component: Agents,
             meta: {
               title: 'Agent 分析',
               nav: true,
               roles: ALL_ROLES,
               activeMenu: '/observability/agents',
-              description:
-                'Agent 执行数、成功率、耗时与工具使用分析将在 Task 17 接入真实 analytics API。',
+            },
+          },
+          {
+            // 精确静态路径，放在 prompts 路由之前，避免被更宽的前缀影响。
+            path: 'prompts/playground',
+            name: 'observability-prompt-playground',
+            component: Playground,
+            meta: {
+              title: 'Prompt Playground',
+              nav: false,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/prompts',
             },
           },
           {
             path: 'prompts',
             name: 'observability-prompts',
-            component: ModulePending,
+            component: Prompts,
             meta: {
               title: '提示词',
               nav: true,
               roles: ALL_ROLES,
               activeMenu: '/observability/prompts',
-              description:
-                'Prompt 模板、不可变版本时间线与 Playground 将在 Task 17 接入真实 Prompt API。',
             },
           },
           {
             path: 'settings',
             name: 'observability-settings',
-            component: ModulePending,
+            component: Settings,
             meta: {
               title: '可观测设置',
               nav: true,
               roles: ['admin'],
               activeMenu: '/observability/settings',
-              description:
-                '采集模式、保留期与脱敏规则配置将在 Task 17 接入真实设置 API（仅管理员可见）。',
             },
           },
         ],

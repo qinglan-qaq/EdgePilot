@@ -399,7 +399,7 @@ export interface AnalyticsCost {
 
 /** GET /observability/analytics/agents 的响应项。 */
 export interface AgentAnalyticsItem {
-  agent_id: string | null
+  agent_id: number | null
   label: string | null
   runs: number
   failed: number
@@ -515,4 +515,245 @@ export function getAnalyticsModels(query?: AnalyticsQuery): Promise<AnalyticsMod
   return api.get<AnalyticsModels>(`${ANALYTICS_BASE}/models`, {
     params: analyticsParams(query),
   })
+}
+
+// ---------------------------------------------------------------------------
+// Prompt 模板 / 不可变版本 / 执行历史 / Playground
+//
+// 版本行不可变：新增版本只能追加。所有接口的模板主键都是数字 id
+// （后端字段 template_pk），不是字符串 template_id。
+// ---------------------------------------------------------------------------
+
+/** 模板分页列表项。 */
+export interface PromptTemplateSummary {
+  id: number
+  template_id: string
+  template_name: string
+  category: string | null
+  active_version: number | null
+  status: string
+  updated_at: string | null
+  created_at: string | null
+}
+
+/** GET /observability/prompts 的分页响应。 */
+export interface PromptTemplatePage {
+  items: PromptTemplateSummary[]
+  total: number
+  page: number
+  size: number
+}
+
+/** 不可变版本行；缺失字段保持 null，不做补齐。 */
+export interface PromptVersion {
+  id: number
+  /** 数字模板主键（对应列表项的 id）。 */
+  template_id: number
+  version: number
+  system_prompt: string | null
+  user_prompt_template: string | null
+  variables_schema: Record<string, unknown> | null
+  model_config: Record<string, unknown> | null
+  changelog: string | null
+  created_by: number | null
+  created_at: string | null
+}
+
+/** GET /observability/prompts/{template_pk} 的详情（含全部版本）。 */
+export interface PromptTemplateDetail extends PromptTemplateSummary {
+  description: string | null
+  owner: string | null
+  versions: PromptVersion[]
+}
+
+/** POST /observability/prompts 的响应。 */
+export interface PromptTemplateCreated {
+  id: number
+  template_id: string
+  template_name: string
+  active_version: number | null
+  status: string
+}
+
+/** 创建模板的请求体。 */
+export interface CreatePromptTemplatePayload {
+  template_id: string
+  template_name: string
+  description?: string | null
+  category?: string | null
+  owner?: string | null
+}
+
+/** 追加版本的请求体；未填写的字段保持 null，由后端原样落库。 */
+export interface AddPromptVersionPayload {
+  system_prompt?: string | null
+  user_prompt_template?: string | null
+  variables_schema?: Record<string, unknown> | null
+  model_config?: Record<string, unknown> | null
+  changelog?: string | null
+}
+
+/** Playground 请求体；execute=true 需要 admin/operator 且会真实调用 LLM。 */
+export interface PromptPlaygroundPayload {
+  version?: number | null
+  variables?: Record<string, unknown>
+  execute?: boolean
+  model_config_id?: number | null
+}
+
+/** Playground 真实执行时 LLM 返回的原始字段；缺失值保持 null。 */
+export interface PromptPlaygroundResponse {
+  content: string | null
+  structured: unknown
+  usage: unknown
+  finish_reason: string | null
+  provider: string | null
+  model_name: string | null
+  request_id: string | null
+  cost: DecimalLike
+  error_code: string | null
+  degraded: boolean | null
+}
+
+/** POST /observability/prompts/{template_pk}/playground 的响应。 */
+export interface PromptPlaygroundResult {
+  status: string
+  messages: unknown[]
+  prompt_hash: string | null
+  version: number
+  /** 预览模式没有 trace；渲染失败时同样为 null。 */
+  trace_id?: string | null
+  span_id?: string | null
+  /** 真实执行的模型响应；预览或渲染失败时为 null。 */
+  response?: PromptPlaygroundResponse | null
+}
+
+/** 执行历史项；缺失值保持 null。 */
+export interface PromptExecutionItem {
+  id: number
+  trace_id: string | null
+  span_id: string | null
+  template_version: number | null
+  render_status: string
+  model_name: string | null
+  prompt_hash: string | null
+  variables: unknown
+  rendered_messages: unknown
+  created_at: string | null
+}
+
+/** GET /observability/prompts/{template_pk}/executions 的分页响应。 */
+export interface PromptExecutionPage {
+  items: PromptExecutionItem[]
+  total: number
+  page: number
+  size: number
+}
+
+const PROMPTS_BASE = '/observability/prompts'
+
+function promptTemplatePath(templatePk: number): string {
+  return `${PROMPTS_BASE}/${encodeURIComponent(String(templatePk))}`
+}
+
+/** 分页读取 Prompt 模板列表；不传参数时由后端使用默认分页。 */
+export function listPromptTemplates(
+  params: { page?: number; size?: number } = {},
+): Promise<PromptTemplatePage> {
+  return api.get<PromptTemplatePage>(PROMPTS_BASE, { params })
+}
+
+/** 读取模板详情与全部不可变版本（后端按版本号倒序）。 */
+export function getPromptTemplate(templatePk: number): Promise<PromptTemplateDetail> {
+  return api.get<PromptTemplateDetail>(promptTemplatePath(templatePk))
+}
+
+/** 创建模板（admin）。 */
+export function createPromptTemplate(
+  payload: CreatePromptTemplatePayload,
+): Promise<PromptTemplateCreated> {
+  return api.post<PromptTemplateCreated>(PROMPTS_BASE, payload)
+}
+
+/** 追加版本（admin）；版本号由后端在模板行锁内自增。 */
+export function addPromptVersion(
+  templatePk: number,
+  payload: AddPromptVersionPayload,
+): Promise<PromptVersion> {
+  return api.post<PromptVersion>(`${promptTemplatePath(templatePk)}/versions`, payload)
+}
+
+/** 发布指定版本（admin），只修改 active_version。 */
+export function publishPromptVersion(
+  templatePk: number,
+  version: number,
+): Promise<{ active_version: number | null }> {
+  return api.post<{ active_version: number | null }>(
+    `${promptTemplatePath(templatePk)}/publish`,
+    { version },
+  )
+}
+
+/** 回滚到指定版本（admin），语义与发布一致。 */
+export function rollbackPromptVersion(
+  templatePk: number,
+  version: number,
+): Promise<{ active_version: number | null }> {
+  return api.post<{ active_version: number | null }>(
+    `${promptTemplatePath(templatePk)}/rollback`,
+    { version },
+  )
+}
+
+/** Playground：execute=false 仅渲染预览，execute=true 真实调用 LLM。 */
+export function runPromptPlayground(
+  templatePk: number,
+  payload: PromptPlaygroundPayload,
+): Promise<PromptPlaygroundResult> {
+  return api.post<PromptPlaygroundResult>(
+    `${promptTemplatePath(templatePk)}/playground`,
+    payload,
+  )
+}
+
+/** 分页读取模板执行历史（created_at、id 倒序）。 */
+export function listPromptExecutions(
+  templatePk: number,
+  params: { page?: number; size?: number } = {},
+): Promise<PromptExecutionPage> {
+  return api.get<PromptExecutionPage>(`${promptTemplatePath(templatePk)}/executions`, {
+    params,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 可观测设置（只读）
+// ---------------------------------------------------------------------------
+
+/** 缺价模型：cost IS NULL 的调用按 provider/model 聚合。 */
+export interface UnpricedModelItem {
+  provider: string
+  model_name: string
+  calls: number
+}
+
+/** 脱敏规则快照。 */
+export interface ObservabilityRedaction {
+  sensitive_key_pattern: string
+  scrubbers: string[]
+  token_count_exempt: boolean
+}
+
+/** GET /observability/settings 的响应（仅 admin）。 */
+export interface ObservabilitySettings {
+  capture_mode: string
+  capture_modes: string[]
+  retention_days: Record<string, number>
+  redaction: ObservabilityRedaction
+  unpriced_models: UnpricedModelItem[]
+}
+
+/** 读取当前进程的真实可观测配置。 */
+export function getObservabilitySettings(): Promise<ObservabilitySettings> {
+  return api.get<ObservabilitySettings>('/observability/settings')
 }
