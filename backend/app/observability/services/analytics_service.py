@@ -16,8 +16,9 @@
 - Tool 成功率 = 已结束逻辑 tool span（``span_type='tool' AND attempt=1``）中
   ``succeeded`` 占比。
 - 权限拒绝数 = ``tool_calls.permission_result='denied'``。
-- 错误分布按 ``spans.error->>'code'`` 分组；只有确有 ``error`` 的 span 参与，
-  error 里没有 code（或 code 为空串）归入 ``unknown``。
+- 错误分布按 ``spans.error->>'code'`` 分组；JSONB 的 ``null`` 与 SQL ``NULL``
+  都表示"无错误"，只有确有 error 对象（含空对象）的 span 参与，error 里没有
+  code（或 code 为空串）归入 ``unknown``。``llm_calls.error`` 的模型错误数同理。
 - 慢请求按 trace ``duration_ms`` 降序。
 
 时间规则：traces / spans 按 ``start_time``，llm_calls / tool_calls 按 ``created_at``。
@@ -302,6 +303,7 @@ WHERE tenant_id = :tenant_id
   AND start_time >= :start_from
   AND start_time <= :start_to
   AND error IS NOT NULL
+  AND error <> 'null'::jsonb
 GROUP BY code
 ORDER BY count DESC, code
 LIMIT :limit
@@ -494,7 +496,9 @@ SELECT
     SUM(total_tokens) AS total_tokens,
     SUM(cost) AS cost,
     COUNT(*) FILTER (WHERE cost IS NULL) AS cost_unavailable_count,
-    COUNT(*) FILTER (WHERE error IS NOT NULL) AS errors
+    COUNT(*) FILTER (
+        WHERE error IS NOT NULL AND error <> 'null'::jsonb
+    ) AS errors
 FROM llm_calls
 WHERE tenant_id = :tenant_id
   AND created_at >= :start_from

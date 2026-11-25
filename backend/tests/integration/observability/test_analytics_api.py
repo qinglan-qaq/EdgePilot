@@ -321,6 +321,44 @@ async def test_overview_cards_and_charts(client, viewer_token, analytics_seed, s
 
 
 @pytest.mark.asyncio
+async def test_json_null_error_is_not_counted(
+    client, viewer_token, analytics_seed, session
+):
+    """写入端把 None 落成 JSONB 'null'；它表示无错误，不能算进错误分布/错误数。"""
+    recent = analytics_seed["recent"]
+    await session.execute(
+        text(
+            "INSERT INTO spans (span_id, tenant_id, trace_id, name, span_type,"
+            " status, attempt, start_time, error)"
+            " VALUES ('sp-json-null', :tenant_id, 'trace-ok', 'node.noop', 'node',"
+            " 'succeeded', 1, :start_time, CAST('null' AS jsonb))"
+        ),
+        {"tenant_id": TENANT, "start_time": recent},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO llm_calls (span_id, tenant_id, provider, model_name,"
+            " attempt, total_tokens, cost, error, created_at)"
+            " VALUES ('sp-json-null', :tenant_id, 'json', 'json-null', 1, 5, NULL,"
+            " CAST('null' AS jsonb), :created_at)"
+        ),
+        {"tenant_id": TENANT, "created_at": recent},
+    )
+
+    overview = await _get(client, viewer_token, "/overview")
+    errors = {e["code"]: e["count"] for e in overview["charts"]["error_distribution"]}
+    assert errors["unknown"] == 1  # 只来自 analytics_seed 中 error={} 的 span
+    assert errors["TOOL_TIMEOUT"] == 1
+    assert errors["LLM_RATE_LIMIT"] == 1
+    assert sum(errors.values()) == 3
+
+    models = await _get(client, viewer_token, "/models")
+    item = next(m for m in models["items"] if m["model_name"] == "json-null")
+    assert item["calls"] == 1
+    assert item["errors"] == 0
+
+
+@pytest.mark.asyncio
 async def test_latency_endpoint(client, viewer_token, analytics_seed):
     data = await _get(client, viewer_token, "/latency")
 
