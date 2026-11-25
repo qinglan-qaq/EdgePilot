@@ -2020,7 +2020,7 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 | 22 | 引擎 + 审批门 + Celery 任务 | `app/workflow/{engine,executor}.py`、`app/tasks/workflow_tasks.py` | 建 run 时预插全部 node_run；审批命中 → `waiting_approval` 释放 worker；`(run_id,node_id,attempt)` 幂等；重启扫 `heartbeat_at` 超 60s 重投 | `test_workflow_engine.py`、`test_workflow_timeout.py` |
 | 23 | 前端壳与登录 | `web/src/{main.ts,router,layouts,views/Login.vue,api/http.ts,stores/auth.ts}` | 401 自动刷新；路由守卫按角色；三态组件 | `npm run build` 通过 + `test_http_interceptor.spec.ts` |
 | 24 | 工作流编辑器 | `web/src/views/WorkflowEditor.vue`、`components/workflow/*` | Vue Flow；按 `input_schema` 渲染参数表单；校验/发布/试跑 | `test_workflow_editor.spec.ts`：拖 6 节点并校验通过 |
-| 25 | 运行追踪页 | `web/src/views/{Runs.vue,RunDetail.vue}`、`components/runs/*` | 节点树实时状态（WS）、耗时、token、工具调用、审批按钮 | `test_run_detail.spec.ts`：审批后状态从 `waiting_approval` → `running` |
+| 25 | 运行追踪页 | `web/src/views/{Runs.vue,RunDetail.vue}`、`components/runs/*` | 节点状态 3 秒轮询（后端无运行级 WS，明确非实时推送）、耗时、token、工具调用、审批按钮、trace/证据查看 | `test_run_detail.spec.ts`：审批后状态从 `waiting_approval` → `running` |
 
 **P6 退出验收**：在界面上拖出 `start → vision(agent) → condition → approval → report(agent) → end`，发布、触发、审批、拿到 Markdown 报告；`workflow_runs.trace_id` 与报告里的证据 ID 均可点击查看。
 
@@ -2090,6 +2090,20 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - **测试与真实契约核对**：模型 7 条（唯一 id、六类默认字段、DSL 往返含 position/未知字段、condition when 替换、非法连接、自动布局、稳定序列化）；组件 7 条（真实 dragstart/drop 拖入 start/agent/condition/approval/agent/end，填入 `vision_agent`、条件表达式、审批角色、`report_agent` 后连接成 `start→vision→condition→(true)approval→report→end` 与 `(false)→end`，断言提交的 6 nodes/6 edges、when、字段与校验通过；另有 viewer/operator/admin 权限、发布先保存、400 回显、试跑 JSON 合法/非法）。`npm run test` 36 passed（原 22 + 新 14），`npm run build` 成功。
 - **后端复核**：用真实 `validate_dsl` 对编辑器同形 DSL（含 `position`、边 `id`）执行校验，返回 `valid=true`、6 nodes、6 edges、入口 start、出口 end，拓扑顺序与编辑器测试一致；确认 `from/to` 是后端实际字段。
 - **有意保留**：未做浏览器 E2E 与真实登录联调（留到 P6 退出验收）；试跑只创建 pending 记录，节点状态/实时追踪在 Task 25；未知节点类型降级展示并原样保存，最终由后端拒绝；自动布局为简单分层，不实现复杂图布局；不提供节点 id 重命名，避免已有表达式静默失效；主包因 Element Plus + Vue Flow 增至约 1.36 MB，后续按需引入/拆包。
+
+### Task 25 代码级展开（已实现：运行追踪与证据查看）
+
+- **文件**：新增 `web/src/api/{types,runs,observability,events}.ts`、`web/src/utils/{status,report}.ts`、`web/src/components/common/MarkdownBlock.vue`、`web/src/components/runs/{RunApprovalCard,RunNodeList,RunNodeDetail,TraceSpanTree,TraceDrawer,EvidenceDrawer}.vue`、`web/src/views/{Runs,RunDetail}.vue`；路由新增 `/runs` 与 `/runs/:id`（详情菜单高亮 `/runs`）；`Workflows.vue` 复用统一状态标签；新增 `marked@18` + `dompurify@3`。
+- **刷新方式（与契约表的差异）**：后端只提供 Trace 的 SSE（`/observability/traces/{id}/stream`），**没有运行级 WebSocket/SSE**，因此 Task 25 的“节点树实时状态（WS）”未实现。详情页对非终态运行使用 **3 秒轮询**，页内明确标注“轮询，非实时推送”；不伪装实时。轮询只更新页面数据，不做节点级增量 diff。
+- **运行列表**：真实调用 `GET /runs`（分页、状态过滤），展示工作流名、版本、状态、触发方式、创建时间、结束时长与“Trace 已采集/未采集”；状态筛选变化回到第 1 页；空状态不生成占位统计；行点击与“详情”均可进入 `/runs/:id`。
+- **运行详情**：校验路由 id 为正整数；头部展示状态、版本、触发方式与耗时；非终态显示轮询提示，pending 明确“等待 worker 领取、尚未采集到执行数据”，不伪造耗时/trace/节点执行；错误只展示后端 message。
+- **审批交互**：`RunApprovalCard` 只在当前角色**显式出现在 `approval.approvers`** 时展示同意/拒绝；admin 不是隐式审批人，只显示审批信息与“当前角色不在审批人列表”。同意/拒绝调用真实 `POST /runs/{id}/approve|reject`，用响应整体替换详情，状态与错误（如 `approval_rejected`）来自后端。取消运行仅 operator/admin 可见，前端二次确认后调用真实接口。
+- **节点与输出**：节点时间线展示节点 id/类型/状态/尝试次数/起止时间/心跳与错误摘要；选中节点展示输入、输出、错误、只读审批信息与 span 跳转。终态输出若为报告结构（`title/markdown/highlights/finding_count/evidence`）则渲染 Markdown、发现数与可回溯结论；`highlights` 兼容后端对象 `{statement,evidence}` 与历史字符串。Markdown 经 `marked` 解析后由 `DOMPurify` 清洗再 `v-html`，脚本/事件属性/javascript URL 被移除。
+- **Trace 抽屉**：打开时按真实 `trace_id` 调 `getTrace` + `getTraceTree`，无 trace 显示“尚未采集”；汇总展示状态、来源、耗时、span/错误数、总 token 与总费用；**token/cost 为 null 时显示“未上报”，不估算**，并展示费用不可用调用数。选中 span 调 `getSpan`，展示输入/输出/错误、LLM 调用、工具调用与检索记录；单条 LLM 调用 `cost_available=false` 显示“费用未上报”；兼容后端实际返回的 `retrieval_records` 键。
+- **证据抽屉**：从运行输出与所有节点输出递归收集 `evidence`，以 `type:ref` 去重保序，不生成占位证据；打开时不自动请求，点击证据编号/查看才请求。`event_id` 校验后调 `getEvent` 展示真实事件字段、bbox/payload 与快照有无；`chunk_id` 明确提示“分块详情接口尚未提供”，只展示引用与片段；`metric` 只展示引用与片段。
+- **并发与失效**：列表/详情加载用递增令牌丢弃过期响应；轮询带版本号，审批/取消/重新加载或路由切换后丢弃在途旧轮询；组件卸载清定时器并使在途响应失效。轮询失败保留上次数据并提示，不清空页面。
+- **测试与构建**：`test_run_detail.spec.ts` 7 条（批准状态切换、admin 非隐式审批人、拒绝、取消二次确认、trace/span 与费用未上报、报告 Markdown + 证据点击、pending 不伪造）、`test_runs_list.spec.ts` 6 条、`test_markdown_block.spec.ts` 3 条（含 XSS 清洗）、`test_status_utils.spec.ts` 7 条。全量 `npm run test` **59 passed**；`npm run build`（vue-tsc + Vite）成功，主包约 1.48 MB（既有 >500 kB 警告）。
+- **有意保留**：无运行级实时推送（后端能力缺失，轮询替代）；证据 Markdown 里的编号未做“点击编号自动定位证据”的富交互，统一从“查看证据”进入；分块详情依赖后续接口；主包偏大，后续按需引入/拆包。
 
 ---
 

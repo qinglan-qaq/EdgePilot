@@ -1,4 +1,10 @@
 import { api } from '@/api/http'
+import type { WorkflowRunDetail } from '@/api/runs'
+import type { PageResult } from '@/api/types'
+
+// 保持既有导入路径兼容：`@/api/workflows` 继续导出分页与运行详情类型。
+export type { PageResult } from '@/api/types'
+export type { WorkflowRunDetail } from '@/api/runs'
 
 /** 工作流发布状态；后端当前只会返回 draft / published。 */
 export type WorkflowStatus = 'draft' | 'published'
@@ -11,14 +17,6 @@ export interface LastRunSummary {
   id: number
   status: string
   created_at: string | null
-}
-
-/** 分页响应信封解包后的结构。 */
-export interface PageResult<T> {
-  items: T[]
-  total: number
-  page: number
-  size: number
 }
 
 /** GET /workflows 的列表项。 */
@@ -101,26 +99,6 @@ export interface WorkflowVersion {
   dsl_hash: string
   created_by: number | null
   created_at: string | null
-}
-
-/** POST /workflows/{id}/runs 返回的运行详情；其余字段留给后续运行追踪页。 */
-export interface WorkflowRunDetail {
-  id: number
-  workflow_id: number
-  workflow_name: string
-  workflow_version_id: number
-  workflow_version: number
-  status: string
-  trigger_type: WorkflowTriggerType
-  trigger_payload: Record<string, unknown> | null
-  input: Record<string, unknown> | null
-  output: unknown
-  error: string | null
-  trace_id: string | null
-  created_at: string | null
-  started_at: string | null
-  finished_at: string | null
-  [key: string]: unknown
 }
 
 /** Agent 选择器所需的最小字段集合。 */

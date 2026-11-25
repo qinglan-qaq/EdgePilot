@@ -13,6 +13,7 @@ import {
 import AsyncState from '@/components/common/AsyncState.vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/datetime'
+import { runStatusLabel, runStatusTagType } from '@/utils/status'
 
 type TagType = 'success' | 'info' | 'warning' | 'danger' | undefined
 
@@ -47,26 +48,6 @@ const rules: FormRules = {
 const canWrite = computed(() => auth.role === 'operator' || auth.role === 'admin')
 const empty = computed(() => items.value.length === 0)
 
-const RUN_STATUS_LABELS: Record<string, string> = {
-  pending: '等待中',
-  running: '运行中',
-  waiting_approval: '待审批',
-  succeeded: '成功',
-  failed: '失败',
-  timeout: '超时',
-  cancelled: '已取消',
-}
-
-const RUN_STATUS_TAG_TYPES: Record<string, TagType> = {
-  pending: 'info',
-  running: 'warning',
-  waiting_approval: 'warning',
-  succeeded: 'success',
-  failed: 'danger',
-  timeout: 'danger',
-  cancelled: 'info',
-}
-
 /** 只展示后端返回的错误信息，避免把 axios 细节暴露给用户。 */
 function errorToMessage(value: unknown): string {
   if (value instanceof ApiError) {
@@ -84,14 +65,6 @@ function workflowStatusLabel(status: WorkflowStatus): string {
 
 function workflowStatusTagType(status: WorkflowStatus): TagType {
   return status === 'published' ? 'success' : 'info'
-}
-
-function runStatusLabel(status: string): string {
-  return RUN_STATUS_LABELS[status] ?? status
-}
-
-function runStatusTagType(status: string): TagType {
-  return RUN_STATUS_TAG_TYPES[status] ?? 'info'
 }
 
 function versionLabel(version: number): string {

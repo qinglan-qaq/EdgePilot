@@ -8,6 +8,8 @@ import Forbidden from '@/views/Forbidden.vue'
 import Login from '@/views/Login.vue'
 import ModulePending from '@/views/ModulePending.vue'
 import NotFound from '@/views/NotFound.vue'
+import RunDetail from '@/views/RunDetail.vue'
+import Runs from '@/views/Runs.vue'
 import WorkflowEditor from '@/views/WorkflowEditor.vue'
 import Workflows from '@/views/Workflows.vue'
 
@@ -97,13 +99,22 @@ const routes: RouteRecordRaw[] = [
       {
         path: 'runs',
         name: 'runs',
-        component: ModulePending,
+        component: Runs,
         meta: {
           title: '运行追踪',
           nav: true,
           icon: 'runs',
           roles: ALL_ROLES,
-          description: '运行记录、节点状态与实时追踪将在后续任务中接入。',
+        },
+      },
+      {
+        path: 'runs/:id',
+        name: 'run-detail',
+        component: RunDetail,
+        meta: {
+          title: '运行详情',
+          roles: ALL_ROLES,
+          activeMenu: '/runs',
         },
       },
       {
