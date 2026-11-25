@@ -2031,6 +2031,16 @@ git commit -m "feat(obs): Prompt 渲染、执行记录与 Playground"
 | 16 | Trace Detail 三栏 | `views/observability/TraceDetail.vue`、`components/observability/{SpanTree,SpanTimeline,SpanInspector,JsonViewer}.vue` | 左树中时间线右 Inspector；10 个 Tab 懒加载；选中联动；失败节点默认展开 | `test_trace_detail.spec.ts`：点第 3 个 span → Inspector 切换且 Timeline 高亮 |
 | 17 | 三个分析页 + Prompt UI | `views/observability/{Tools,Models,Agents,Prompts,Playground,Settings}.vue` | 全部数据来自 analytics API；Prompt 对比用 diff 视图；Settings 改采集模式需二次确认 | `test_prompt_compare.spec.ts`：两版本渲染差异高亮 |
 
+### Task 9 代码级展开（已实现）
+
+`GET /api/v1/observability/spans/{span_id}`（viewer 可读，租户取自 `TenantContext`）返回 span 字段 + 三组 1:N 数组：`llm_calls`、`tool_calls`、`retrieval_records`。实现位于 `services/trace_service.py` 的 `get_span` / `_related_records`：
+
+- 先用 `information_schema.columns` 探测 `_RELATED_TABLES` 白名单中的表；表不存在或缺 `tenant_id/span_id` 时该组返回 `[]`，**从不报错**（`0004` 未应用时 `retrieval_records == []`）。
+- 表可用时按 `tenant_id = 当前租户 AND span_id = :span_id ORDER BY id` 查询，因此 `tool_calls` 保持插入顺序，attempt 依次为 1、2。输出键与查询表名统一为 `retrieval_records`（此前误写为 `retrievals`）。
+- 仅对 `llm_calls` 追加派生布尔 `cost_available = (cost is not None)`；`cost` 原样保留（缺失即 `null`），**不做任何估算**。
+
+测试 `tests/integration/observability/test_span_detail.py`：两次 attempt 的 tool/llm 调用按序返回且 `cost_available` 正确、`retrieval_records` 为空；跨租户 404；无子记录的 span 三组均为空；未知 span 404。
+
 **P3–P7 退出验收**：`make e2e` 跑 `tests/e2e/test_observability_flow.py`——真实工作流请求后：（1）`/traces` 出现该 trace；（2）`/tree` 有 ≥1 workflow + 6 agent + ≥2 tool + ≥1 llm 节点；（3）Inspector 的 Prompt Tab 显示模板版本与渲染消息；（4）SSE 在运行中推送 ≥3 个事件；（5）`OBS_ENABLED=false` 时同一请求仍成功且 `/traces` 无新增。
 
 ---

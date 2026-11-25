@@ -10,11 +10,12 @@ from app.core.pagination import PageParams, PageResult
 from app.core.tenancy import get_tenant_id
 from app.observability.models import Span, Trace
 
-# Task 6 才建这三张表；在此之前 span 详情返回空列表，不能报错。
+# key 为响应中的输出键，value 为实际表名。retrieval_records 要等 0004 迁移；
+# 在此之前 span 详情对该组返回空列表，不能报错。
 _RELATED_TABLES = {
     "llm_calls": "llm_calls",
     "tool_calls": "tool_calls",
-    "retrieval_records": "retrievals",
+    "retrieval_records": "retrieval_records",
 }
 
 
@@ -179,23 +180,23 @@ async def get_tree(session: AsyncSession, trace_id: str) -> list[dict]:
 async def _related_records(session: AsyncSession, span_id: str) -> dict[str, list[dict]]:
     """查询 span 关联的 LLM/工具/检索记录。
 
-    这些表在 Task 6 之前不存在。先用 information_schema 探测表与必需列，
+    `retrieval_records` 在 0004 之前不存在。先用 information_schema 探测表与必需列，
     只对确实可用（且有 tenant_id/span_id）的表发查询，避免失败查询回滚
-    测试夹具尚未提交的数据。
+    测试夹具尚未提交的数据。结果键与表名一致，缺失表的组返回空列表。
     """
-    result: dict[str, list[dict]] = {key: [] for key in _RELATED_TABLES.values()}
+    result: dict[str, list[dict]] = {key: [] for key in _RELATED_TABLES}
     rows = await session.execute(
         text(
             "SELECT table_name, column_name FROM information_schema.columns "
             "WHERE table_schema='public' AND table_name = ANY(:names)"
         ),
-        {"names": list(_RELATED_TABLES)},
+        {"names": list(_RELATED_TABLES.values())},
     )
     columns: dict[str, set[str]] = {}
     for table_name, column_name in rows:
         columns.setdefault(table_name, set()).add(column_name)
 
-    for table_name, key in _RELATED_TABLES.items():
+    for key, table_name in _RELATED_TABLES.items():
         available = columns.get(table_name)
         if not available or not {"tenant_id", "span_id"} <= available:
             continue
@@ -208,6 +209,10 @@ async def _related_records(session: AsyncSession, span_id: str) -> dict[str, lis
             {"tenant_id": get_tenant_id(), "span_id": span_id},
         )
         result[key] = [dict(record._mapping) for record in records]
+
+    for record in result["llm_calls"]:
+        # cost 为 NULL 表示价格缺失：只标记不可用，绝不估算。
+        record["cost_available"] = record.get("cost") is not None
     return result
 
 
