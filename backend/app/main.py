@@ -29,7 +29,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={
                 "code": exc.code,
                 "message": exc.message,
-                "data": None,
+                "data": exc.detail,
                 "trace_id": request_id_var.get(),
             },
         )

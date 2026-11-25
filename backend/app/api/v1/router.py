@@ -8,7 +8,9 @@ from app.api.v1.events import router as events_router
 from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.models import router as models_router
 from app.api.v1.nodes import router as nodes_router
+from app.api.v1.runs import router as runs_router
 from app.api.v1.tools import router as tools_router
+from app.api.v1.workflows import router as workflows_router
 from app.observability.api.prompts import router as prompts_router
 from app.observability.api.traces import router as observability_router
 
@@ -21,6 +23,8 @@ api_router.include_router(audit_router)
 api_router.include_router(nodes_router)
 api_router.include_router(devices_router)
 api_router.include_router(events_router)
+api_router.include_router(workflows_router)
+api_router.include_router(runs_router)
 api_router.include_router(knowledge_router)
 api_router.include_router(observability_router)
 api_router.include_router(prompts_router)
