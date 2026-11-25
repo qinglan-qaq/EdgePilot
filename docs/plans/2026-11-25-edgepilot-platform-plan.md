@@ -2073,6 +2073,24 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - **测试与构建**：`tests/test_http_interceptor.spec.ts` 7 条（Bearer、信封解包、并发 401 单次刷新并重放、刷新失败单次通知且不重试、登录 401 不刷新、无 refresh token、403/409 保留 message/trace_id）；`tests/test_async_state.spec.ts` 4 条（loading/error+retry/empty/默认插槽）。`npm run test` 11 passed；`npm run build`（vue-tsc --noEmit + vite build）成功。
 - **有意保留**：尚未做浏览器 E2E 与真实后端联调（留到 P6 退出验收）；Element Plus 全量引入导致主包约 1.1 MB（后续可改按需引入/拆包）；WebSocket/SSE 与运行详情实时刷新留到 Task 25；前端静态资源的生产容器托管留到 P7 部署任务。
 
+### Task 24A 代码级展开（已实现：工作流列表与 API 客户端）
+
+- **文件**：新增 `web/src/api/workflows.ts`、`web/src/utils/datetime.ts`、`web/src/views/Workflows.vue`、`web/tests/{test_workflow_list,test_datetime}.spec.ts`；`web/src/router/index.ts` 将 `/workflows` 指向真实列表页，并新增 `workflows/:id`（`workflow-editor`）子路由，当时仍为占位页。
+- **接口契约**：列表 `GET /workflows`、详情、PATCH 草稿、validate、publish、versions、runs、Agent/Tool 选择器全部走 `api` 封装并自动解包信封；`WorkflowEdgeDsl` 明确后端实际使用的 `from/to`（保留 `source/target` 仅为旧草稿兼容），`when` 为字符串。
+- **列表行为**：展示名称、状态、当前版本、最近运行、更新时间与分页；加载/错误+重试/空态完整，空态不渲染占位行；点击行或“编辑”进入编辑器；创建弹窗仅 operator/admin 可见，创建 `{nodes:[],edges:[]}` 空图草稿后跳转；viewer 无写入口；快速翻页用递增令牌丢弃过期响应。
+- **测试与构建**：列表 7 条（真实字段渲染、空态、错误重试、viewer/operator 权限、创建成功/失败、翻页）+ 时间格式化 4 条。`npm run test` 22 passed（含既有 11 条），`npm run build` 成功。
+
+### Task 24B 代码级展开（已实现：Vue Flow 编辑器）
+
+- **依赖**：`@vue-flow/core@1.48.2`、`@vue-flow/background@1.3.2`、`@vue-flow/controls`、`@vue-flow/minimap`；`web/tests/setup.ts` 为 jsdom 补 `ResizeObserver`、`matchMedia` 与非零 `offsetWidth/Height`，避免 Vue Flow 初始化被环境缺失阻断。
+- **文件**：`web/src/views/WorkflowEditor.vue`、`web/src/components/workflow/{editor-model.ts,WorkflowNodeCard,NodePalette,NodeInspector,ValidationPanel}.vue`；路由 `workflows/:id` 替换为真实编辑器；`vite.config.ts` 增加 `setupFiles`。
+- **图↔DSL**：`dslToFlow` 保留节点 `position`、把未知字段放入 `data.extra` 原样回写；缺失坐标时从 start 做确定性 BFS 分层布局；`flowToDsl` 输出后端实际读取的 `from/to`、condition 的 `when`、节点 `position` 与边 `id`。condition 卡片有 `true/false` 两个 source handle，连线替换同分支旧边；非 condition 拒绝重复边/自环/start 入边/end 出边。
+- **编辑能力**：六种节点拖拽/点击添加，start 唯一；检查器支持 timeout_ms、agent/tool/max_retries、condition expression（带上游节点提示）、approval title/approvers（admin 不隐式）；input_map 按 Tool `input_schema` 或 Agent `config.input_schema` 渲染，支持字面量、数字/布尔转换与 `$` 表达式，保留 schema 之外的已有键；无 schema 时明确提示引擎直接使用运行输入。
+- **操作闭环**：保存草稿（operator/admin）、校验（所有登录角色，展示真实 errors/warnings/拓扑并可按 node_id 定位）、发布（admin，先保存再发布；400 后自动拉取校验报告）、试跑（operator/admin，未发布禁用；JSON 输入必须是对象；只展示后端返回的 pending run id/status/version，不轮询、不生成 trace_id）。viewer 只读；dirty 状态用稳定 JSON 对比并在离开路由时确认。
+- **测试与真实契约核对**：模型 7 条（唯一 id、六类默认字段、DSL 往返含 position/未知字段、condition when 替换、非法连接、自动布局、稳定序列化）；组件 7 条（真实 dragstart/drop 拖入 start/agent/condition/approval/agent/end，填入 `vision_agent`、条件表达式、审批角色、`report_agent` 后连接成 `start→vision→condition→(true)approval→report→end` 与 `(false)→end`，断言提交的 6 nodes/6 edges、when、字段与校验通过；另有 viewer/operator/admin 权限、发布先保存、400 回显、试跑 JSON 合法/非法）。`npm run test` 36 passed（原 22 + 新 14），`npm run build` 成功。
+- **后端复核**：用真实 `validate_dsl` 对编辑器同形 DSL（含 `position`、边 `id`）执行校验，返回 `valid=true`、6 nodes、6 edges、入口 start、出口 end，拓扑顺序与编辑器测试一致；确认 `from/to` 是后端实际字段。
+- **有意保留**：未做浏览器 E2E 与真实登录联调（留到 P6 退出验收）；试跑只创建 pending 记录，节点状态/实时追踪在 Task 25；未知节点类型降级展示并原样保存，最终由后端拒绝；自动布局为简单分层，不实现复杂图布局；不提供节点 id 重命名，避免已有表达式静默失效；主包因 Element Plus + Vue Flow 增至约 1.36 MB，后续按需引入/拆包。
+
 ---
 
 ## P7 分析、部署与可靠性（契约级）
