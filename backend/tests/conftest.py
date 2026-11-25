@@ -1,8 +1,8 @@
 """Shared pytest fixtures.
 
-本 Task（Task 5）只提供数据库/会话/client/种子用户夹具；认证相关夹具
+本文件提供数据库/会话/client/种子用户夹具以及认证相关夹具
 （auth_headers / login_token / admin_token / viewer_token /
-other_tenant_token）留待 Task 4b 追加。
+other_tenant_token）。
 
 `migrated_db` 是 session 级 autouse：每次测试会话把测试库 upgrade 到 head。
 所有 session 都绑到同一个连接 + 外层事务，测试结束整体回滚。
@@ -99,3 +99,27 @@ async def seeded_users(session):
     session.add_all(users)
     await session.flush()
     return users
+
+
+def auth_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def login_token(client, email: str, password: str = PASSWORD) -> str:
+    r = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    return r.json()["data"]["access_token"]
+
+
+@pytest.fixture
+async def admin_token(client, seeded_users):
+    return await login_token(client, ADMIN_EMAIL)
+
+
+@pytest.fixture
+async def viewer_token(client, seeded_users):
+    return await login_token(client, VIEWER_EMAIL)
+
+
+@pytest.fixture
+async def other_tenant_token(client, seeded_users):
+    return await login_token(client, OTHER_ADMIN_EMAIL)
