@@ -20,6 +20,8 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -113,6 +115,45 @@ class _UsageMeter:
             self.total_cost = (self.total_cost or Decimal(0)) + response.cost
 
 
+@asynccontextmanager
+async def _trace_scope(
+    tracer: Any, name: str, existing: Any | None
+) -> AsyncIterator[Any]:
+    """复用外部 trace 句柄，或按原逻辑新开一条 trace。
+
+    外部句柄（含 ``NullTrace``）由所有者管理生命周期，这里只借用其
+    ``trace_id``，不设置 output、不关闭。
+    """
+    if existing is not None:
+        yield existing
+        return
+    async with tracer.start_trace(name, source="agent_test") as trace:
+        yield trace
+
+
+@asynccontextmanager
+async def _span_scope(
+    tracer: Any,
+    name: str,
+    existing: Any | None,
+    *,
+    agent_id: int | None,
+    agent_version: int | None,
+) -> AsyncIterator[Any]:
+    """复用外部 span 句柄，或新开一个由本函数收口的 agent span。
+
+    外部句柄（含 ``NullSpan``）由所有者 finish；本函数不进入其上下文
+    管理器，避免提前关闭。
+    """
+    if existing is not None:
+        yield existing
+        return
+    async with tracer.start_span(
+        name, "agent", agent_id=agent_id, agent_version=agent_version
+    ) as span:
+        yield span
+
+
 async def run_agent(
     agent: Agent,
     task: dict,
@@ -121,6 +162,8 @@ async def run_agent(
     llm: LLMClient,
     session: AsyncSession,
     tenant_id: uuid.UUID | None = None,
+    trace_handle: Any | None = None,
+    span_handle: Any | None = None,
 ) -> AgentRunResult:
     """执行一次 Agent 并写入一行 ``agent_runs``。
 
@@ -131,6 +174,13 @@ async def run_agent(
         llm: 已按请求构造的 ``LLMClient``（mock / real 由调用方决定）。
         session: 请求级会话；本函数提交一次运行行。
         tenant_id: 缺省取上下文租户；显式传入便于后台任务复用。
+        trace_handle: 可选的既有 trace 句柄。传入时**不再新开 trace**，
+            仅用其 ``trace_id`` 关联运行行，span 仍写在当前上下文里；
+            默认 ``None`` 保持独立 trace 的原行为。
+        span_handle: 可选的既有 span 句柄（通常由编排器创建）。传入时
+            **不再新开 agent span，也不负责收口**，只写入 input/output/
+            error/meta，由句柄所有者 finish；默认 ``None`` 时自行开 span
+            并在退出时关闭。
 
     Returns:
         ``AgentRunResult``；失败也返回结果，不抛业务异常。
@@ -146,15 +196,18 @@ async def run_agent(
     span_id: str | None = None
     outcome = _Outcome("failed", None, "internal_error: 未执行", 0)
 
-    async with tracer.start_trace(f"agent_test.{agent.name}", source="agent_test") as trace:
-        trace_id = _id_or_none(trace.trace_id)
-        async with tracer.start_span(
+    async with _trace_scope(
+        tracer, f"agent_test.{agent.name}", trace_handle
+    ) as trace:
+        trace_id = _id_or_none(getattr(trace, "trace_id", None))
+        async with _span_scope(
+            tracer,
             f"agent.{agent.agent_type}",
-            "agent",
+            span_handle,
             agent_id=agent.id,
             agent_version=agent.current_version,
         ) as span:
-            span_id = _id_or_none(span.span_id)
+            span_id = _id_or_none(getattr(span, "span_id", None))
             span.set_input(task).set_meta(prompt_source="inline_fallback")
             try:
                 outcome = await asyncio.wait_for(
@@ -183,10 +236,12 @@ async def run_agent(
                     outcome.span_error_message or "",
                     retryable=outcome.span_error_retryable,
                 )
-            if outcome.status == "failed":
+            if outcome.status == "failed" and span_handle is None:
                 # 显式收口：正常退出时 __aexit__ 会默认 succeeded。
+                # 外部句柄由其所有者 finish，这里不能抢先关闭。
                 span.finish("failed")
-        trace.set_output({"status": outcome.status, "error": outcome.error})
+        if trace_handle is None:
+            trace.set_output({"status": outcome.status, "error": outcome.error})
 
     finished_at = datetime.now(timezone.utc)
     row = await AgentRunRepo(session).create_run(

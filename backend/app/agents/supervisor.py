@@ -63,12 +63,14 @@ DEFAULT_MAX_AGENT_CALLS = 6
 DEFAULT_MAX_REPLANS = 2
 DEFAULT_MAX_TOKENS = 60000
 DEFAULT_TIMEOUT_S = 60.0
+DEFAULT_BRANCH_TIMEOUT_S = 30.0
 
 # 结构化错误码（写进 errors / error，调用方按前缀匹配）。
 INVALID_ASSIGNMENT = "supervisor_invalid_assignment"
 AGENT_CALL_LIMIT = "agent_call_limit"
 BUDGET_EXCEEDED = "budget_exceeded"
 TIMEOUT = "timeout"
+BRANCH_TIMEOUT = "branch_timeout"
 PLANNER_UNAVAILABLE = "supervisor_planner_unavailable"
 PLANNER_FAILED = "supervisor_planner_failed"
 PLANNER_INVALID = "supervisor_planner_invalid"
@@ -91,12 +93,13 @@ def build_messages(agent: Any, task: dict) -> list[dict]:
 
 @dataclass(frozen=True)
 class SupervisorLimits:
-    """编排预算：调用次数 / 重规划次数 / token / 墙钟超时。"""
+    """编排预算：调用次数 / 重规划次数 / token / 墙钟超时 / 单分支超时。"""
 
     max_agent_calls: int = DEFAULT_MAX_AGENT_CALLS
     max_replans: int = DEFAULT_MAX_REPLANS
     max_tokens: int = DEFAULT_MAX_TOKENS
     timeout_s: float = DEFAULT_TIMEOUT_S
+    branch_timeout_s: float = DEFAULT_BRANCH_TIMEOUT_S
 
 
 class Assignment(BaseModel):
@@ -170,6 +173,7 @@ class _GraphState(TypedDict, total=False):
     status: str
     output: Any
     buffer: Any
+    supervisor_span_id: str | None
 
 
 PlanFn = Callable[..., Awaitable[Any]]
@@ -228,9 +232,12 @@ class Supervisor:
         """执行一次编排；超时 / 图异常都返回结构化结果而非抛异常。"""
         buffer = _RunBuffer()
         span = self._begin_span(task)
+        supervisor_span_id = _id_or_none(getattr(span, "span_id", None))
         try:
             state = await asyncio.wait_for(
-                self._graph.ainvoke(self._initial_state(task, buffer)),
+                self._graph.ainvoke(
+                    self._initial_state(task, buffer, supervisor_span_id)
+                ),
                 timeout=self._limits.timeout_s,
             )
             result = self._result_from_state(state)
@@ -265,7 +272,12 @@ class Supervisor:
         builder.add_edge("finalize", END)
         return builder.compile()
 
-    def _initial_state(self, task: dict, buffer: _RunBuffer) -> _GraphState:
+    def _initial_state(
+        self,
+        task: dict,
+        buffer: _RunBuffer,
+        supervisor_span_id: str | None = None,
+    ) -> _GraphState:
         return _GraphState(
             task=dict(task),
             failed=[],
@@ -278,6 +290,7 @@ class Supervisor:
             dropped=0,
             output=None,
             buffer=buffer,
+            supervisor_span_id=supervisor_span_id,
         )
 
     async def _plan_node(self, state: _GraphState) -> dict:
@@ -325,21 +338,43 @@ class Supervisor:
         }
 
     async def _agent_node(self, state: _GraphState) -> dict:
-        """执行单个派发；成功/失败都落一条结果，绝不把异常抛出图外。"""
+        """执行单个派发；成功/失败/超时都落一条结果，绝不把异常抛出图外。"""
+        raw_assignment = state.get("assignment") or {}
         try:
-            assignment = Assignment.model_validate(state.get("assignment") or {})
+            assignment = Assignment.model_validate(raw_assignment)
         except ValidationError as exc:
             entry = _failed_entry(
-                agent_type=str((state.get("assignment") or {}).get("agent_type", "")),
-                goal=str((state.get("assignment") or {}).get("goal", "")),
+                agent_type=str(raw_assignment.get("agent_type", "")),
+                goal=str(raw_assignment.get("goal", "")),
                 input={},
                 error=f"{INVALID_ASSIGNMENT}: 派发参数不合法：{_format_validation_error(exc)}",
             )
             return self._append_result(state, entry)
 
+        span = self._begin_branch_span(
+            assignment, state.get("supervisor_span_id")
+        )
+        orchestration_errors: list[str] = []
         try:
-            run = await self._runner(assignment)
-            entry = _entry_from_run(assignment, run)
+            run = await asyncio.wait_for(
+                self._runner(assignment),
+                timeout=self._limits.branch_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            message = (
+                f"{BRANCH_TIMEOUT}: {assignment.agent_type} 分支超过 "
+                f"{self._limits.branch_timeout_s:g}s 未完成"
+            )
+            entry = _failed_entry(
+                agent_type=assignment.agent_type,
+                goal=assignment.goal,
+                input=assignment.input,
+                error=message,
+            )
+            # 分支超时属于编排级告警：除结果条目外同时进 errors，
+            # 便于调用方在不遍历 results 的情况下感知。
+            orchestration_errors.append(message)
+            _set_span_error(span, BRANCH_TIMEOUT, message, retryable=True)
         except SupervisorRunnerError as exc:
             entry = _failed_entry(
                 agent_type=assignment.agent_type,
@@ -347,21 +382,37 @@ class Supervisor:
                 input=assignment.input,
                 error=str(exc),
             )
+            _set_span_error(span, exc.code, str(exc), retryable=False)
         except Exception as exc:  # noqa: BLE001 - runner 异常收敛为子任务失败
             logger.exception("Supervisor runner 异常（agent_type=%s）", assignment.agent_type)
+            message = f"{RUNNER_ERROR}: {type(exc).__name__}: {exc}"
             entry = _failed_entry(
                 agent_type=assignment.agent_type,
                 goal=assignment.goal,
                 input=assignment.input,
-                error=f"{RUNNER_ERROR}: {type(exc).__name__}: {exc}",
+                error=message,
             )
-        return self._append_result(state, entry)
+            _set_span_error(span, RUNNER_ERROR, message, retryable=False)
+        else:
+            entry = _entry_from_run(assignment, run)
+            error = entry.get("error")
+            if entry.get("status") != "succeeded" and isinstance(error, str) and error:
+                _set_span_error(span, _error_code(error), error, retryable=False)
 
-    def _append_result(self, state: _GraphState, entry: dict) -> dict:
+        self._finish_branch_span(span, entry)
+        return self._append_result(state, entry, errors=orchestration_errors)
+
+    def _append_result(
+        self,
+        state: _GraphState,
+        entry: dict,
+        *,
+        errors: list[str] | None = None,
+    ) -> dict:
         buffer = state.get("buffer")
         if isinstance(buffer, _RunBuffer):
             buffer.results.append(entry)
-        return {"results": [entry]}
+        return {"results": [entry], "errors": list(errors or [])}
 
     async def _assess_node(self, state: _GraphState) -> dict:
         """统计当前波次失败与累计 token；决定是否重规划。"""
@@ -481,12 +532,18 @@ class Supervisor:
         from app.observability import get_tracer
 
         payload = {"goal": assignment.goal, "input": assignment.input}
+        from app.observability import context as obs_context
+
         return await run_agent(
             agent,
             payload,
             tracer=self._tracer or get_tracer(),
             llm=self._llm,
             session=self._session,
+            # 复用图内当前 trace/span，避免默认 runner 另开嵌套 trace；
+            # 句柄可能是 NullTrace/NullSpan，run_agent 自行兜底。
+            trace_handle=obs_context.current_trace.get(),
+            span_handle=obs_context.current_span.get(),
         )
 
     async def _load_published_agent(self, agent_type: str) -> Any:
@@ -563,6 +620,41 @@ class Supervisor:
         except Exception as exc:  # noqa: BLE001 - 观测是旁路能力
             logger.debug("Supervisor span 开启失败：%s", exc)
             return None
+
+    def _begin_branch_span(
+        self, assignment: Assignment, supervisor_span_id: str | None
+    ) -> Any | None:
+        """为单个并行分支开 ``agent.{type}`` span，并强制挂到 ``supervisor.run`` 下。
+
+        LangGraph 的 ``Send`` 分支各自持有复制上下文，父 span 不一定还在
+        ``current_span`` 里；父 id 经图状态传入后在这里显式赋值，保证所有
+        子 span 的 ``parent_span_id`` 唯一指向 ``supervisor.run``。
+        """
+        if self._tracer is None:
+            return None
+        try:
+            span = self._tracer.start_span(
+                f"agent.{assignment.agent_type}", "agent"
+            )
+            if supervisor_span_id and hasattr(span, "parent_span_id"):
+                span.parent_span_id = supervisor_span_id
+            span.set_input({"goal": assignment.goal, "input": assignment.input})
+            return span
+        except Exception as exc:  # noqa: BLE001 - 观测是旁路能力
+            logger.debug("Supervisor 分支 span 开启失败：%s", exc)
+            return None
+
+    def _finish_branch_span(self, span: Any | None, entry: dict) -> None:
+        """按条目状态收口分支 span；失败状态由调用方提前标注错误码。"""
+        if span is None:
+            return
+        try:
+            succeeded = entry.get("status") == "succeeded"
+            if succeeded and entry.get("output") is not None:
+                span.set_output(entry["output"])
+            span.finish("succeeded" if succeeded else "failed")
+        except Exception as exc:  # noqa: BLE001 - 观测是旁路能力
+            logger.debug("Supervisor 分支 span 收口失败：%s", exc)
 
     def _finish_span(self, span: Any | None, result: SupervisorResult) -> None:
         if span is None:
@@ -830,6 +922,24 @@ def _field(value: Any, name: str) -> Any:
 
 def _str_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _set_span_error(
+    span: Any | None, code: str, message: str, *, retryable: bool
+) -> None:
+    """给分支 span 标注结构化错误；观测失败绝不打断编排。"""
+    if span is None:
+        return
+    try:
+        span.set_error(code, message, retryable=retryable)
+    except Exception as exc:  # noqa: BLE001 - 观测是旁路能力
+        logger.debug("Supervisor 分支 span 错误标注失败：%s", exc)
+
+
+def _error_code(error: str) -> str:
+    """从 ``code: message`` 形式的错误串里取结构化错误码。"""
+    code = error.split(":", 1)[0].strip()
+    return code or RUNNER_ERROR
 
 
 def _int_or_none(value: Any) -> int | None:

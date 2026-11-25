@@ -1880,6 +1880,18 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **测试**：`test_supervisor_budget.py` —— 第 7 次调用被拒并保留 6 条部分结果、重规划止于 2 次（planner 共 3 次）、越权类型零调用、35k×2 触发 `budget_exceeded` 停止重规划。
 
+### Task 15 代码级展开（已实现）
+
+**文件**：`app/agents/supervisor.py`（分支 span + `branch_timeout`）、`app/agents/base.py`（`run_agent` 句柄参数）、`tests/unit/agents/test_supervisor_parallel.py`。
+
+**Span 归属**：`_agent_node` 为每个 `Send` 分支单独开 `agent.{agent_type}`（`span_type="agent"`），输入 `{goal, input}`；因分支各自持有复制上下文，代码在开 span 后**显式**把 `parent_span_id` 指到 `supervisor.run` span（父 id 经图状态 `supervisor_span_id` 传递，不依赖 contextvar 是否被复制），全部子 span 共享同一 `trace_id`。
+
+**分支超时**：`SupervisorLimits.branch_timeout_s`（默认 30s）用 `asyncio.wait_for` 包住单次 runner；超时生成 `status="failed"`、`error` 以 `branch_timeout:` 开头的条目并给 span 标 `branch_timeout`（retryable），其它分支照常完成，图级 `asyncio.wait_for` 仍兜底整体。
+
+**默认 runner 嵌套 trace 修复**：`run_agent` 新增 keyword-only `trace_handle` / `span_handle`；传入时不再新开 trace/agent span，只在既有句柄上写 input/output/error/meta 且不负责收口，运行行仍记录句柄 id。`Supervisor._default_runner` 从 `app.observability.context` 读取当前 trace/span 并传入，默认路径只产生一条 trace（supervisor + 子 agent span）；不传句柄时行为与 Task 12/13 完全一致。
+
+**测试**：`test_supervisor_parallel.py` —— 两个并行 agent span 时间区间重叠且 `parent_span_id` 同为 `supervisor.run`；`branch_timeout_s=0.05` 时慢分支失败、快分支结果保留、整体 `partial` 且不抛异常。
+
 ---
 
 ## P4 边缘与设备（契约级）
