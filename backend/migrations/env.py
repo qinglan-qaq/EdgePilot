@@ -14,6 +14,7 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 import app.models  # noqa: F401  确保全部 ORM 模型注册到 Base.metadata
+import app.observability.models  # noqa: F401  观测三表注册到 Base.metadata
 from app.core.config import get_settings
 from app.models import Base
 
