@@ -10,6 +10,7 @@ other_tenant_token）。
 
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 import redis.asyncio as aioredis
@@ -40,7 +41,7 @@ def migrated_db():
     old = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = get_settings().test_database_url
     try:
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config(str(Path(__file__).resolve().parents[1] / "alembic.ini")), "head")
     finally:
         if old is None:
             os.environ.pop("DATABASE_URL", None)
