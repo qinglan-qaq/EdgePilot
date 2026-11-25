@@ -8,8 +8,9 @@ class Settings(BaseSettings):
 
     app_name: str = "edgepilot"
     env: str = "dev"
-    database_url: str = "postgresql+asyncpg://edgepilot:edgepilot@localhost:5432/edgepilot"
-    test_database_url: str = "postgresql+asyncpg://edgepilot:edgepilot@localhost:5432/edgepilot_test"
+    # 本机 5432 已被本地 PostgreSQL 占用；docker compose 里的 PG 映射到 5433
+    database_url: str = "postgresql+asyncpg://edgepilot:edgepilot@localhost:5433/edgepilot"
+    test_database_url: str = "postgresql+asyncpg://edgepilot:edgepilot@localhost:5433/edgepilot_test"
     redis_url: str = "redis://localhost:6379/0"
     rabbitmq_url: str = "amqp://edgepilot:edgepilot@localhost:5672//"
     mqtt_host: str = "localhost"
