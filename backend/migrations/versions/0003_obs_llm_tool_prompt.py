@@ -116,10 +116,100 @@ def upgrade() -> None:
         ["tenant_id", "execution_status", "created_at"],
     )
 
-    # Task 7 追加: prompt_templates / prompt_versions / prompt_executions
+    # ---- prompt_templates ------------------------------------------------
+    op.create_table(
+        "prompt_templates",
+        _id(),
+        _tenant(),
+        sa.Column("template_id", sa.String(64), nullable=False),
+        sa.Column("template_name", sa.String(128), nullable=False),
+        sa.Column("description", sa.Text),
+        sa.Column("category", sa.String(32)),
+        sa.Column("owner", sa.String(64)),
+        sa.Column("active_version", sa.Integer),
+        sa.Column("status", sa.String(16), nullable=False, server_default="active"),
+        *_timestamps(),
+    )
+    op.create_index("ix_prompt_templates_tenant_id", "prompt_templates", ["tenant_id"])
+    op.create_index("ix_prompt_templates_created_at", "prompt_templates", ["created_at"])
+    op.create_index(
+        "uq_prompt_templates_tenant_template",
+        "prompt_templates",
+        ["tenant_id", "template_id"],
+        unique=True,
+    )
+
+    # ---- prompt_versions -------------------------------------------------
+    op.create_table(
+        "prompt_versions",
+        _id(),
+        _tenant(),
+        sa.Column("template_id", sa.BigInteger, nullable=False),
+        sa.Column("version", sa.Integer, nullable=False),
+        sa.Column("system_prompt", sa.Text),
+        sa.Column("user_prompt_template", sa.Text),
+        sa.Column("variables_schema", JSONB),
+        sa.Column("model_config", JSONB),
+        sa.Column("changelog", sa.Text),
+        sa.Column("created_by", sa.BigInteger),
+        *_timestamps(),
+    )
+    op.create_index("ix_prompt_versions_tenant_id", "prompt_versions", ["tenant_id"])
+    op.create_index("ix_prompt_versions_created_at", "prompt_versions", ["created_at"])
+    op.create_index(
+        "uq_prompt_versions_template_version",
+        "prompt_versions",
+        ["template_id", "version"],
+        unique=True,
+    )
+
+    # ---- prompt_executions -----------------------------------------------
+    op.create_table(
+        "prompt_executions",
+        _id(),
+        _tenant(),
+        sa.Column("trace_id", sa.String(32)),
+        sa.Column("span_id", sa.String(16)),
+        sa.Column("template_id", sa.BigInteger),
+        sa.Column("template_version", sa.Integer),
+        sa.Column("variables", JSONB),
+        sa.Column("rendered_messages", JSONB),
+        sa.Column("prompt_hash", sa.String(64)),
+        sa.Column("render_status", sa.String(24), nullable=False),
+        sa.Column("model_name", sa.String(128)),
+        *_timestamps(),
+    )
+    op.create_index("ix_prompt_executions_tenant_id", "prompt_executions", ["tenant_id"])
+    op.create_index("ix_prompt_executions_created_at", "prompt_executions", ["created_at"])
+    op.create_index("ix_prompt_executions_trace_id", "prompt_executions", ["trace_id"])
+    op.create_index("ix_prompt_executions_span_id", "prompt_executions", ["span_id"])
+    op.create_index(
+        "ix_prompt_executions_template_version_created",
+        "prompt_executions",
+        ["template_id", "template_version", "created_at"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_prompt_executions_template_version_created", table_name="prompt_executions"
+    )
+    op.drop_index("ix_prompt_executions_span_id", table_name="prompt_executions")
+    op.drop_index("ix_prompt_executions_trace_id", table_name="prompt_executions")
+    op.drop_index("ix_prompt_executions_created_at", table_name="prompt_executions")
+    op.drop_index("ix_prompt_executions_tenant_id", table_name="prompt_executions")
+    op.drop_table("prompt_executions")
+
+    op.drop_index("uq_prompt_versions_template_version", table_name="prompt_versions")
+    op.drop_index("ix_prompt_versions_created_at", table_name="prompt_versions")
+    op.drop_index("ix_prompt_versions_tenant_id", table_name="prompt_versions")
+    op.drop_table("prompt_versions")
+
+    op.drop_index("uq_prompt_templates_tenant_template", table_name="prompt_templates")
+    op.drop_index("ix_prompt_templates_created_at", table_name="prompt_templates")
+    op.drop_index("ix_prompt_templates_tenant_id", table_name="prompt_templates")
+    op.drop_table("prompt_templates")
+
     op.drop_index("ix_tool_calls_tenant_status_created", table_name="tool_calls")
     op.drop_index("ix_tool_calls_tenant_tool_created", table_name="tool_calls")
     op.drop_index("ix_tool_calls_span_attempt", table_name="tool_calls")
