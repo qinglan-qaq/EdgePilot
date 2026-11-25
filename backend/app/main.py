@@ -70,7 +70,21 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
+        from app.core.config import get_settings
+        from app.db import get_session_factory
+        from app.observability import get_tracer, set_writer
+        from app.observability.live import LiveLayer
+        from app.observability.writer import BatchWriter
+
+        s = get_settings()
+        set_writer(BatchWriter(get_session_factory(),
+                               live=LiveLayer(s.redis_url, s.obs_live_ttl_seconds)))
+        await get_tracer().collector.start()
+        try:
+            yield
+        finally:
+            # 先停采集任务（会写完最后一批），再关闭连接池
+            await get_tracer().collector.stop()
 
     app = FastAPI(title="EdgePilot API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)

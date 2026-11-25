@@ -8,6 +8,7 @@ import json
 from collections.abc import AsyncIterator
 
 import redis.asyncio as aioredis
+from pydantic_core import to_jsonable_python
 
 from app.core.config import get_settings
 
@@ -42,6 +43,48 @@ class LiveLayer:
         except Exception:
             return False
         finally:
+            await self._close(client)
+
+    async def publish_many(self, records: list[dict]) -> bool:
+        """批量更新实时快照并逐条广播；失败返回 False，不抛异常。
+
+        快照只存每个 trace 的最后一条记录（一次 pipeline 完成），
+        广播则逐条发出，保证 SSE 收到的顺序与落库顺序一致。
+        """
+        if not records:
+            return True
+        latest: dict[str, str] = {}
+        payloads: list[tuple[str, str]] = []
+        try:
+            for record in records:
+                trace_id = record.get("trace_id")
+                if not trace_id:
+                    continue
+                data = json.dumps(to_jsonable_python(record), ensure_ascii=False)
+                latest[trace_id] = data
+                payloads.append((trace_id, data))
+        except Exception:
+            return False
+        if not payloads:
+            return True
+        client = _client(self.redis_url)
+        pipe = None
+        try:
+            pipe = client.pipeline(transaction=False)
+            for trace_id, data in latest.items():
+                pipe.set(f"{SNAPSHOT_PREFIX}{trace_id}", data, ex=self.ttl_seconds)
+            for trace_id, data in payloads:
+                pipe.publish(f"{CHANNEL_PREFIX}{trace_id}", data)
+            await pipe.execute()
+            return True
+        except Exception:
+            return False
+        finally:
+            if pipe is not None:
+                try:
+                    await pipe.aclose()
+                except Exception:
+                    pass
             await self._close(client)
 
     async def snapshot(self, trace_id: str) -> dict:
