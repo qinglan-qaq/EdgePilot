@@ -1854,6 +1854,18 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **P3 退出验收**：`make e2e` 跑 `tests/e2e/test_agent_flow.py`——一次请求在 `agent_runs` 产生 6 行，且 `traces` 中该 trace 的 agent span 为 6 个（观测计划提供 `GET /traces/{id}/tree` 断言）。
 
+### Task 13 代码级展开（已实现）
+
+**文件**：新增 `app/agents/schemas.py`（模型与校验）、`app/agents/prompts.py`（md prompt 加载 + 消息构造）、`app/agents/registry.py`（类型 → 模块）、六个薄模块 `app/agents/{supervisor,device,vision,operations,diagnosis,report}.py`；改造 `app/agents/base.py` 去掉硬编码设备 schema；测试 `tests/unit/agents/test_domain_agent_schema.py`、`tests/integration/test_agent_domain_run.py`，并在 `tests/conftest.py` 为 `_make_published_agent` 增加 `agent_type` / `config_extra` 可选参数。
+
+**模型**：`Evidence(type, ref, snippet?)`；基类 `EvidenceBackedOutput(evidence=[], CONCLUSION_FIELDS)`；领域模型 `SupervisorOutput(plan, assignments, summary)`、`DeviceOutput(answer, device_status)`、`VisionOutput(summary, events)`、`OperationsOutput(summary, findings)`、`DiagnosisOutput(conclusion, possible_causes)`、`ReportOutput(markdown, evidence)`。
+
+**证据规则**：`model_validator(mode="after")` 仅在「结论字段非空且 `evidence == []`」时抛 `ValueError`；空结论 + 空证据是合法的“不编造”路径。Supervisor / Report 不强制（Report 证据链留给 Task 16）。
+
+**运行语义**：`base._execute` 以 `output_schema_for(agent_type)` 传 `response_schema`、以 `parse_output(agent_type, candidate)` 做 Pydantic 校验；校验失败仍只重试 1 次，第二次失败落 `agent_output_invalid`。预算 / 超时 / `agent_runs` / 观测语义不变。
+
+**测试**：`test_domain_agent_schema.py` 覆盖六类模型的证据约束、`parse_output` 与 `output_schema_for`；`test_agent_domain_run.py` 用 `diagnosis_ok` / `diagnosis_no_evidence` 两个 fixture 验证成功落库与「缺证据 → 一次重试后 `agent_output_invalid`」。
+
 ---
 
 ## P4 边缘与设备（契约级）

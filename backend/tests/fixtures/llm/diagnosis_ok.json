@@ -1,0 +1,5 @@
+{
+  "content": "{\"conclusion\": \"设备过热\", \"possible_causes\": [], \"evidence\": [{\"type\": \"metric\", \"ref\": \"m1\", \"snippet\": \"cpu 95%\"}]}",
+  "finish_reason": "stop",
+  "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+}

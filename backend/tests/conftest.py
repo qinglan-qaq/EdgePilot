@@ -159,10 +159,26 @@ def llm_fixtures():
     return FIXTURE_DIR
 
 
-async def _make_published_agent(client, admin_token, name: str, mock_fixture: str) -> int:
-    payload = {"name": name, "agent_type": "device",
+async def _make_published_agent(
+    client,
+    admin_token,
+    name: str,
+    mock_fixture: str,
+    *,
+    agent_type: str = "device",
+    config_extra: dict | None = None,
+) -> int:
+    """创建并发布一个 Agent，返回 id。
+
+    ``agent_type`` / ``config_extra`` 供 P3 领域契约测试覆盖其它角色；
+    默认值与 Task 12 的设备夹具完全一致。
+    """
+    config = {"system_prompt": "你是设备诊断助手", "mock_fixture": mock_fixture}
+    if config_extra:
+        config.update(config_extra)
+    payload = {"name": name, "agent_type": agent_type,
                "prompt_template_id": None, "prompt_version": None,
-               "config": {"system_prompt": "你是设备诊断助手", "mock_fixture": mock_fixture}}
+               "config": config}
     created = (await client.post("/api/v1/agents", json=payload,
                                  headers=auth_headers(admin_token))).json()["data"]
     await client.post(f"/api/v1/agents/{created['id']}/publish",

@@ -3,11 +3,11 @@
 本模块只负责「跑一次 Agent」，不处理 HTTP 与鉴权：
 
 * ``task`` 原样落库，绝不改写；
-* Prompt 模板快照渲染尚未接入（Task 13+），本期使用
-  ``agent.config["system_prompt"]`` 内联回退，并在 span 的
-  ``metadata.prompt_source`` 上标注 ``inline_fallback``；
-* 输出必须通过 Pydantic 校验；失败重试**恰好一次**，再失败即
-  ``agent_output_invalid``；
+* Prompt 由 ``agents.registry`` 按 ``agent_type`` 选择：优先
+  ``agent.config["system_prompt"]``，其次 ``backend/agents/prompts/{type}.md``，
+  最后通用兜底；span 的 ``metadata.prompt_source`` 仍标注 ``inline_fallback``；
+* 输出 Schema 按 ``agent_type`` 从 ``agents.schemas`` 取，必须通过 Pydantic
+  校验；失败重试**恰好一次**，再失败即 ``agent_output_invalid``；
 * 任何 LLM 错误都收敛成 ``status="failed"``，不伪造输出、不估算 token/成本。
 
 ``OBS_ENABLED=false`` 时 tracer 句柄是 no-op 对象，``trace_id`` / ``span_id``
@@ -25,10 +25,17 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.llm import LLMClient, LLMResponse
+from app.agents.registry import get_build_messages
+from app.agents.schemas import (
+    AgentEvidence,
+    AgentOutput,
+    output_schema_for,
+    parse_output,
+)
 from app.core.tenancy import get_tenant_id
 from app.models.agent import Agent
 from app.repositories.agent_repo import AgentRunRepo
@@ -38,25 +45,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS_BUDGET = 60000
 DEFAULT_TIMEOUT_S = 60.0
 
-# 本阶段单 Agent 的固定输出 Schema；Task 13 会按 agent_type 拆分到 agents/schemas.py。
-DEVICE_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "required": ["answer", "evidence"],
-    "properties": {
-        "answer": {"type": "string"},
-        "evidence": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["type", "ref"],
-                "properties": {
-                    "type": {"type": "string"},
-                    "ref": {"type": "string"},
-                },
-            },
-        },
-    },
-}
+# 兼容旧引用：规范定义已迁移到 ``app.agents.schemas``。
+__all__ = [
+    "AgentEvidence",
+    "AgentOutput",
+    "AgentRunResult",
+    "DEFAULT_MAX_TOKENS_BUDGET",
+    "DEFAULT_TIMEOUT_S",
+    "run_agent",
+]
 
 _LLM_ERROR_MESSAGES = {
     "timeout": "LLM 调用超时",
@@ -66,24 +63,6 @@ _LLM_ERROR_MESSAGES = {
 }
 _RETRYABLE_LLM_CODES = frozenset({"timeout", "provider_error"})
 _OUTPUT_SCHEMA_INVALID = "output_schema_invalid"
-
-
-class AgentEvidence(BaseModel):
-    """一条可回溯证据；本期只约束 ``type`` / ``ref`` 两个字段。"""
-
-    model_config = ConfigDict(extra="allow")
-
-    type: str
-    ref: str
-
-
-class AgentOutput(BaseModel):
-    """单 Agent 的结构化输出；结论必须带证据（Task 13 再细分领域模型）。"""
-
-    model_config = ConfigDict(extra="allow")
-
-    answer: str
-    evidence: list[AgentEvidence]
 
 
 @dataclass
@@ -250,11 +229,11 @@ async def _execute(
     budget: int,
 ) -> _Outcome:
     """调用 LLM 并校验输出；Schema 失败时重试一次。"""
-    config = agent.config if isinstance(agent.config, dict) else {}
-    messages = _build_messages(config, task)
+    messages = _build_messages(agent, task)
+    response_schema = output_schema_for(agent.agent_type)
 
     response = await llm.chat(
-        messages, response_schema=DEVICE_OUTPUT_SCHEMA, temperature=0
+        messages, response_schema=response_schema, temperature=0
     )
     meter.add(response)
 
@@ -265,7 +244,7 @@ async def _execute(
     if over_budget is not None:
         return over_budget
 
-    parsed, validation_error = _parse_output(response)
+    parsed, validation_error = _parse_output(agent.agent_type, response)
     if parsed is not None:
         return _Outcome("succeeded", parsed, None, meter.retry_count)
 
@@ -281,7 +260,7 @@ async def _execute(
         }
     ]
     retry_response = await llm.chat(
-        retry_messages, response_schema=DEVICE_OUTPUT_SCHEMA, temperature=0
+        retry_messages, response_schema=response_schema, temperature=0
     )
     meter.add(retry_response)
 
@@ -292,7 +271,7 @@ async def _execute(
     if over_budget is not None:
         return over_budget
 
-    parsed, retry_error = _parse_output(retry_response)
+    parsed, retry_error = _parse_output(agent.agent_type, retry_response)
     if parsed is not None:
         return _Outcome("succeeded", parsed, None, meter.retry_count)
 
@@ -308,16 +287,9 @@ async def _execute(
     )
 
 
-def _build_messages(config: dict, task: dict) -> list[dict]:
-    """内联 system prompt + JSON 序列化的用户任务。"""
-    messages: list[dict] = []
-    system_prompt = config.get("system_prompt")
-    if isinstance(system_prompt, str) and system_prompt.strip():
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append(
-        {"role": "user", "content": json.dumps(task, ensure_ascii=False, default=str)}
-    )
-    return messages
+def _build_messages(agent: Agent, task: dict) -> list[dict]:
+    """按 ``agent_type`` 从 registry 取消息构造器；未知类型在 registry 内回退。"""
+    return get_build_messages(agent.agent_type)(agent, task)
 
 
 def _terminal_llm_error(response: LLMResponse, *, retry_count: int) -> _Outcome | None:
@@ -343,16 +315,16 @@ def _budget_outcome(meter: _UsageMeter, budget: int, *, retry_count: int) -> _Ou
     )
 
 
-def _parse_output(response: LLMResponse) -> tuple[dict | None, str | None]:
-    """解析并 Pydantic 校验；返回 ``(output, error)``，二者互斥。"""
+def _parse_output(agent_type: str, response: LLMResponse) -> tuple[dict | None, str | None]:
+    """解析并按角色模型校验；返回 ``(output, error)``，二者互斥。"""
     candidate = _extract_json(response)
     if candidate is None:
         return None, "内容不是合法的 JSON 对象"
     try:
-        model = AgentOutput.model_validate(candidate)
+        parsed = parse_output(agent_type, candidate)
     except ValidationError as exc:
         return None, _format_validation_error(exc)
-    return model.model_dump(), None
+    return parsed, None
 
 
 def _extract_json(response: LLMResponse) -> dict | None:
