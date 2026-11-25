@@ -26,3 +26,27 @@ async def seeded_trace(session):
             {"s": span_id, "ten": TENANT, "t": TRACE_ID, "p": parent,
              "n": name, "ty": span_type})
     return TRACE_ID
+
+
+class FakePubSub:
+    def __init__(self):
+        self.channels = []
+        self.closed = False
+
+    async def subscribe(self, channel):
+        self.channels.append(channel)
+
+    async def listen(self):
+        if False:          # 空异步生成器：没有实时消息时立刻结束
+            yield
+
+    async def unsubscribe(self, channel):
+        pass
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fake_pubsub():
+    return FakePubSub()
