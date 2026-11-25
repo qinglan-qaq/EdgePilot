@@ -1,16 +1,21 @@
-"""Prompt 模板 API：创建、列表、详情、追加版本、发布与回滚。
+"""Prompt 模板 API：创建、列表、详情、追加版本、发布、回滚与 Playground 预览。
 
 写操作仅 admin；版本行没有 PATCH/PUT 端点（不可变）。
 """
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_role
+from app.core.exceptions import Forbidden, NotFound, ServiceUnavailable
 from app.core.pagination import PageParams
+from app.core.tenancy import get_tenant_id
 from app.db import get_db
+from app.observability.models import PromptVersion
 from app.observability.prompt import version_manager
+from app.observability.prompt.renderer import render
 from app.schemas.common import ok
 
 router = APIRouter(prefix="/observability/prompts", tags=["prompts"])
@@ -37,6 +42,12 @@ class AddVersionRequest(BaseModel):
 
 class VersionRequest(BaseModel):
     version: int
+
+
+class PlaygroundRequest(BaseModel):
+    version: int | None = None
+    variables: dict = Field(default_factory=dict)
+    execute: bool = False
 
 
 @router.post("")
@@ -127,3 +138,54 @@ async def rollback(
 ) -> dict:
     template = await version_manager.rollback(session, template_pk, payload.version)
     return ok({"active_version": template.active_version})
+
+
+async def _resolve_playground_version(
+    session: AsyncSession, template_pk: int, requested: int | None
+) -> PromptVersion:
+    """指定版本需属于该模板；未指定则用已发布版本。"""
+    template = await version_manager.get_template(session, template_pk)
+    version_no = requested if requested is not None else template.active_version
+    if version_no is None:
+        raise NotFound("尚未发布")
+    row = await session.scalar(
+        select(PromptVersion).where(
+            PromptVersion.tenant_id == get_tenant_id(),
+            PromptVersion.template_id == template_pk,
+            PromptVersion.version == version_no,
+        )
+    )
+    if row is None:
+        raise NotFound("版本不存在")
+    return row
+
+
+@router.post("/{template_pk}/playground")
+async def playground(
+    template_pk: int,
+    payload: PlaygroundRequest,
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """渲染预览；预览本身没有 trace/span，因此不写 prompt_executions。
+
+    execute=True 需要 admin/operator。真实执行要等平台 P2 的
+    `app.llm.client.LLMClient` 落地后替换为：开新 trace(source="playground")
+    调 `LLMClient.chat`，再用 record_execution 记录本次 Prompt 执行。
+    """
+    version_row = await _resolve_playground_version(session, template_pk, payload.version)
+
+    if payload.execute:
+        if user.role not in ("admin", "operator"):
+            raise Forbidden("角色不足")
+        raise ServiceUnavailable("LLM 客户端尚未接入，Playground 暂支持渲染预览")
+
+    result = render(version_row, payload.variables)
+    return ok(
+        {
+            "status": result.status,
+            "messages": result.messages,
+            "prompt_hash": result.prompt_hash,
+            "version": version_row.version,
+        }
+    )

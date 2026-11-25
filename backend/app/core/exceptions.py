@@ -35,3 +35,7 @@ class Conflict(AppError):
 
 class RateLimited(AppError):
     code = http_status = 429
+
+
+class ServiceUnavailable(AppError):
+    code = http_status = 503
