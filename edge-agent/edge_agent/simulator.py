@@ -64,12 +64,14 @@ def simulated_event_payload(
 ) -> dict:
     """构造明确标注为模拟的事件；不含任何伪造的检测置信度等业务数据。"""
     now = (clock or utcnow)()
+    occurred_at = to_utc_iso(now)
     return {
         "msg_id": uuid.uuid4().hex,
-        "sent_at": to_utc_iso(now),
+        "sent_at": occurred_at,
         "node_key": node_key,
         SIMULATION_MARKER: True,
         "event_type": "mock_detection",
+        "occurred_at": occurred_at,
         "message": "synthetic simulated event; not a real device reading",
     }
 

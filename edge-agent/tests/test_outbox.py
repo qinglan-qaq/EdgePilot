@@ -14,6 +14,7 @@ from edge_agent.heartbeat import HeartbeatPublisher
 from edge_agent.mqtt_client import MqttClient, reconnect_delay
 from edge_agent.outbox import Outbox
 from edge_agent.registry import build_register_payload, register
+from edge_agent.simulator import simulated_event_payload
 from edge_agent.topics import (
     cmd_filter,
     event_topic,
@@ -344,3 +345,20 @@ def test_register_payload_idempotent_fields(tmp_path):
 
 def test_reconnect_delay_is_exponential_capped_at_30s():
     assert [reconnect_delay(attempt) for attempt in range(7)] == [1, 2, 4, 8, 16, 30, 30]
+
+
+# ---------------------------------------------------------------------------
+# 7. 模拟事件必须带后端入库所需的 occurred_at，且显式标记 simulated
+# ---------------------------------------------------------------------------
+
+
+def test_simulated_event_payload_has_ingest_contract():
+    payload = simulated_event_payload("node-1", clock=lambda: T0)
+
+    assert payload["simulated"] is True
+    assert payload["node_key"] == "node-1"
+    assert payload["event_type"] == "mock_detection"
+    assert payload["occurred_at"] == T0.isoformat()
+    assert payload["sent_at"] == payload["occurred_at"]
+    assert payload["msg_id"]
+    assert "confidence" not in payload

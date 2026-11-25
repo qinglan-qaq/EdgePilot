@@ -1945,7 +1945,7 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - 注册：`edge/{node_key}/register` QoS 1；每次构建新 `msg_id`，`node_key/os/arch/agent_version` 稳定，离线写入 outbox 等重连补发。
 - LWT / 重连：构造时在 `edge/{node_key}/status` 设 retained `offline`；`on_connect` 发布 retained `online`、订阅 `edge/{node_key}/cmd/+`（QoS 1）并同步 `flush` outbox。`reconnect_delay(attempt)` 为 1,2,4,8,16,30,30，paho `reconnect_delay_set(1, 30)`。
 - 按主题持久化：register / event / task ack 失败入队；heartbeat / status 不持久化（过期数据无补发价值）。
-- 测试与入口：`edge-agent/tests/test_outbox.py` 覆盖 5 分钟断网不丢不重、失败重试不重复、离线注册/事件补发、5s 心跳字段、LWT 与退避；`make test-edge` 独立运行，不依赖网络或数据库。
+- 测试与入口：`edge-agent/tests/test_outbox.py` 覆盖 5 分钟断网不丢不重、失败重试不重复、离线注册/事件补发、5s 心跳字段、LWT 与退避；`make test-edge` 独立运行，不依赖网络或数据库。模拟事件额外携带 `occurred_at`（与 `sent_at` 同源）并保留 `simulated=true`，满足控制面 `vision_events` 的入库契约，同时不伪造检测置信度。
 
 ### Task 18 代码级展开（已实现）
 
@@ -1959,6 +1959,14 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - API 与审计：节点列表支持 status 过滤与分页，提供详情、metrics、PATCH（name/labels/disabled）与 commands；设备提供列表、创建、更新、删除、probe。写接口限 admin/operator，viewer 403；命令 `task_id` 默认 uuid4，`traceparent` 优先级为请求体 → 请求头 → 活动 trace → 新生成；审计 `node.command` / `device.probe` 走旁路，失败不阻断主流程。
 - 配置与生命周期：新增 `MQTT_ENABLED`(默认 false)、`MQTT_DEDUPE_TTL_SECONDS`、`NODE_OFFLINE_AFTER_S`(15)、`NODE_SWEEP_INTERVAL_S`(5)；compose 的 api 服务显式 `MQTT_ENABLED=true`；lifespan 仅在开启时启动 MQTT/sweeper，启动失败只记日志，停机顺序为先 sweeper/MQTT 再 tracer。
 - 测试：`tests/integration/test_heartbeat.py` 覆盖注册幂等/版本更新/重复消息/租户隔离、心跳指标、15s 扫描边界、禁用不复活、LWT 上下线、事件去重与任务 ack；`tests/integration/test_nodes.py` 覆盖重复注册仅 1 条、跨租户 404、指令发布与审计、viewer 403、禁用 409、MQTT 503、metrics、PATCH 启停用、设备 CRUD/probe。下行测试通过依赖覆盖注入 fake publisher，不依赖 broker。
+
+### P4 退出验收（已实测）
+
+- 环境：Docker Mosquitto 1883 + 本地 uvicorn（`MQTT_ENABLED=true`，8010）+ `edge_agent.main --simulate --nodes 2`；控制面 MQTT 日志确认 `MQTT 已连接`、两节点 `register=created`、heartbeat `updated`、模拟事件 `created`。
+- 两节点在线：`edge_nodes` 中 `sim-node-1/2` 均为 `online`，`last_heartbeat_at` 持续刷新；`vision_events` 每条均带 `simulated=true` 与 `occurred_at`，事件数与 `count(distinct dedup_key)` 相等。
+- 15s 离线：`docker pause` Mosquitto 模拟心跳中断（LWT 无法送达），23s 后两节点均被 sweeper 置 `offline`；`docker unpause` 后自动重连恢复 `online`。
+- 重启幂等：停止边缘进程后 LWT 将两节点置 `offline`；重启后恢复 `online`，`vision_events` 由 28 增至 30 且 `dedup_key` 无重复（dupes=0），outbox 每次仅补发 1 条注册消息。
+- 说明：本阶段用本地进程完成退出验收；2 个 edge-agent 容器 + `make demo` 的 Compose 化随 P7 离线部署包落地，避免在未实现 seed/认证演示数据前提前固化 demo profile。
 
 ---
 
