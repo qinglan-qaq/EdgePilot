@@ -334,6 +334,8 @@ async def test_happy_path_pauses_at_approval_then_resume_sets_report_output(
     assert approval["expires_at"] > approval["created_at"]
     assert nodes["report"].status == "pending"
     assert len(calls) == 1
+    review_span = next(span for span in tracer.spans if span.name == "node.review")
+    assert nodes["review"].span_id == review_span.span_id
 
     # 审批通过：run 回到 running，节点成功，且只把审批结果写回节点。
     approved = await RunService(session).decide(
@@ -369,6 +371,18 @@ async def test_happy_path_pauses_at_approval_then_resume_sets_report_output(
     assert len(closes) == 1
     assert closes[0]["status"] == "succeeded"
     assert closes[0]["trace_id"] == FakeTrace.trace_id
+
+    # 恢复执行时补关审批 span，终态 trace 不应残留 waiting_approval。
+    approval_closes = [
+        record
+        for record in tracer.records
+        if record.get("kind") == "span.close"
+        and record.get("span_type") == "approval"
+    ]
+    assert len(approval_closes) == 1
+    assert approval_closes[0]["status"] == "succeeded"
+    assert approval_closes[0]["span_id"] == nodes["review"].span_id
+    assert approval_closes[0]["output"] == {"decision": "approved"}
 
 
 async def test_reject_fails_run_and_skips_downstream_nodes(

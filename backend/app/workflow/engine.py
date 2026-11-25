@@ -7,8 +7,9 @@
 - 每次执行前重读 run 状态，取消后立刻停止，不覆盖取消服务写入的终态。
 - 节点结果持久化后才推进到后继；已 ``succeeded`` / ``skipped`` 的节点不重跑，
   崩溃遗留的 ``running`` 节点通过 attempt+1 重试。
-- 审批命中会释放 worker：run 与节点都停在 ``waiting_approval``，trace 不关闭，
-  等审批服务批准后以 ``resume_node_id`` 再入队。
+- 审批命中会释放 worker：run 与节点都停在 ``waiting_approval``，trace 保持
+  开启；审批服务批准后以 ``resume_node_id`` 再入队，恢复时关闭审批 span，
+  避免已成功的运行残留 ``waiting_approval`` 状态的 span。
 - 观测是旁路：任何 tracer / span 异常都被吞掉并降级为 Null 句柄，绝不影响
   节点执行与运行结果。
 """
@@ -35,7 +36,7 @@ from app.models.agent import Agent
 from app.models.run import WorkflowNodeRun, WorkflowRun
 from app.observability import context as obs_context
 from app.observability import get_tracer
-from app.observability.span import NullSpan, NullTrace, TraceHandle
+from app.observability.span import NullSpan, NullTrace, SpanHandle, TraceHandle
 from app.repositories.workflow_repo import WorkflowRepo
 from app.tools.executor import ToolExecutionError
 from app.tools.registry import ToolContext, get_default_registry
@@ -396,6 +397,46 @@ class WorkflowEngine:
             logger.warning("节点 span 开启失败（node_id=%s）", node_id, exc_info=True)
             return NullSpan()
 
+    def _close_approval_span(self, row: WorkflowNodeRun) -> None:
+        """恢复执行时关闭审批 span。
+
+        审批暂停会释放 worker，span 只能停在 ``waiting_approval``；审批通过后
+        节点行已是 ``succeeded``，恢复流程不会再执行该节点，需在这里补一次
+        ``span.close``，否则终态 trace 里会残留等待中的 span。
+        """
+        trace = self.trace
+        if trace is None or not row.span_id:
+            return
+        approval = row.approval if isinstance(row.approval, dict) else {}
+        start_time = row.started_at or self._now()
+        span = SpanHandle(
+            tracer=self.tracer,
+            tenant_id=row.tenant_id,
+            trace_id=trace.trace_id,
+            span_id=row.span_id,
+            parent_span_id=trace.root_span_id,
+            name=f"node.{row.node_id}",
+            span_type="approval",
+            start_time=start_time,
+            attempt=row.attempt,
+            node_id=row.node_id,
+        )
+        # 时长覆盖从发起审批到恢复执行的等待时间。
+        span._started = start_time.timestamp() * 1000
+        span.set_input(
+            {"title": approval.get("title"), "approvers": approval.get("approvers") or []}
+        )
+        span.set_output(row.output)
+        span.set_meta(
+            title=approval.get("title"),
+            approvers=approval.get("approvers") or [],
+            expires_at=approval.get("expires_at"),
+            decision=approval.get("decision"),
+            decided_by=approval.get("by"),
+            decided_at=approval.get("at"),
+        )
+        _safe(span.finish, "succeeded")
+
     def _close_trace(self, status: str, output: Any) -> None:
         if self.trace is None:
             return
@@ -431,6 +472,8 @@ class WorkflowEngine:
                 continue
 
             if row.status in ("succeeded", "skipped"):
+                if row.node_type == "approval" and row.status == "succeeded":
+                    self._close_approval_span(row)
                 if node.get("type") == "end":
                     reached_end = True
                     if end_output is None:
@@ -776,6 +819,8 @@ class WorkflowEngine:
             {"approvers": list(approvers), "expires_at": _iso(expires_at)},
         )
         _safe(span.finish, "waiting_approval")
+        # span_id 必须随节点行落库：恢复执行时依赖它补关审批 span。
+        await self.session.commit()
         return _NodeResult("waiting_approval")
 
     # ---------------------------------------------------------- 重试与收口
