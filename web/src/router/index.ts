@@ -8,6 +8,8 @@ import Forbidden from '@/views/Forbidden.vue'
 import Login from '@/views/Login.vue'
 import ModulePending from '@/views/ModulePending.vue'
 import NotFound from '@/views/NotFound.vue'
+import ObservabilityLayout from '@/views/observability/ObservabilityLayout.vue'
+import Overview from '@/views/observability/Overview.vue'
 import RunDetail from '@/views/RunDetail.vue'
 import Runs from '@/views/Runs.vue'
 import WorkflowEditor from '@/views/WorkflowEditor.vue'
@@ -164,6 +166,108 @@ const routes: RouteRecordRaw[] = [
           roles: ALL_ROLES,
           description: '文档上传、列表与检索调试将在后续任务中接入。',
         },
+      },
+      {
+        path: 'observability',
+        name: 'observability',
+        component: ObservabilityLayout,
+        meta: {
+          title: 'AI Observability',
+          nav: true,
+          icon: 'observability',
+          roles: ALL_ROLES,
+        },
+        children: [
+          {
+            path: '',
+            name: 'observability-overview',
+            component: Overview,
+            meta: {
+              title: '可观测概览',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability',
+            },
+          },
+          {
+            path: 'traces',
+            name: 'observability-traces',
+            component: ModulePending,
+            meta: {
+              title: 'Trace 查询',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/traces',
+              description:
+                'Trace 列表、过滤条件与三栏详情将在 Task 15/16 接入真实观测 API；本页不展示模拟列表或占位图表。',
+            },
+          },
+          {
+            path: 'tools',
+            name: 'observability-tools',
+            component: ModulePending,
+            meta: {
+              title: '工具分析',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/tools',
+              description:
+                '工具调用成功率、P50/P95、重试与权限拒绝分析将在 Task 17 接入真实 analytics API。',
+            },
+          },
+          {
+            path: 'models',
+            name: 'observability-models',
+            component: ModulePending,
+            meta: {
+              title: '模型分析',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/models',
+              description:
+                'provider / model 维度的 token、成本与失败分析将在 Task 17 接入真实 analytics API。',
+            },
+          },
+          {
+            path: 'agents',
+            name: 'observability-agents',
+            component: ModulePending,
+            meta: {
+              title: 'Agent 分析',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/agents',
+              description:
+                'Agent 执行数、成功率、耗时与工具使用分析将在 Task 17 接入真实 analytics API。',
+            },
+          },
+          {
+            path: 'prompts',
+            name: 'observability-prompts',
+            component: ModulePending,
+            meta: {
+              title: '提示词',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/prompts',
+              description:
+                'Prompt 模板、不可变版本时间线与 Playground 将在 Task 17 接入真实 Prompt API。',
+            },
+          },
+          {
+            path: 'settings',
+            name: 'observability-settings',
+            component: ModulePending,
+            meta: {
+              title: '可观测设置',
+              nav: true,
+              roles: ['admin'],
+              activeMenu: '/observability/settings',
+              description:
+                '采集模式、保留期与脱敏规则配置将在 Task 17 接入真实设置 API（仅管理员可见）。',
+            },
+          },
+        ],
       },
       {
         path: 'settings',

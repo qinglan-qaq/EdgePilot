@@ -7,6 +7,7 @@ import {
   Bell,
   Camera,
   Connection,
+  DataLine,
   Odometer,
   Reading,
   Setting,
@@ -18,10 +19,16 @@ import type { UserRole } from '@/api/http'
 import { canAccessRoles } from '@/router/access'
 import { useAuthStore } from '@/stores/auth'
 
+interface NavChild {
+  path: string
+  title: string
+}
+
 interface NavItem {
   path: string
   title: string
   icon?: Component
+  children?: NavChild[]
 }
 
 const route = useRoute()
@@ -35,6 +42,7 @@ const iconMap: Record<string, Component> = {
   agents: Avatar,
   workflows: Share,
   runs: VideoPlay,
+  observability: DataLine,
   nodes: Connection,
   devices: Camera,
   events: Bell,
@@ -65,10 +73,26 @@ const navItems = computed<NavItem[]>(() => {
     if (!canAccessRoles(child.meta.roles, auth.role)) {
       continue
     }
+
+    const children: NavChild[] = []
+    for (const nested of child.children ?? []) {
+      if (!nested.meta?.nav || !nested.name) {
+        continue
+      }
+      if (!canAccessRoles(nested.meta.roles, auth.role)) {
+        continue
+      }
+      children.push({
+        path: router.resolve({ name: nested.name }).path,
+        title: nested.meta.title ?? '未命名页面',
+      })
+    }
+
     items.push({
       path: router.resolve({ name: child.name }).path,
       title: child.meta.title ?? '未命名模块',
       icon: child.meta.icon ? iconMap[child.meta.icon] : undefined,
+      ...(children.length > 0 ? { children } : {}),
     })
   }
 
@@ -110,10 +134,26 @@ async function handleLogout(): Promise<void> {
       </div>
 
       <el-menu :default-active="activeMenu" router class="app-menu">
-        <el-menu-item v-for="item in navItems" :key="item.path" :index="item.path">
-          <el-icon v-if="item.icon"><component :is="item.icon" /></el-icon>
-          <span>{{ item.title }}</span>
-        </el-menu-item>
+        <template v-for="item in navItems" :key="item.path">
+          <el-sub-menu v-if="item.children?.length" :index="item.path">
+            <template #title>
+              <el-icon v-if="item.icon"><component :is="item.icon" /></el-icon>
+              <span>{{ item.title }}</span>
+            </template>
+            <el-menu-item
+              v-for="child in item.children"
+              :key="child.path"
+              :index="child.path"
+            >
+              <span>{{ child.title }}</span>
+            </el-menu-item>
+          </el-sub-menu>
+
+          <el-menu-item v-else :index="item.path">
+            <el-icon v-if="item.icon"><component :is="item.icon" /></el-icon>
+            <span>{{ item.title }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
 
       <div class="app-aside__footer">控制台</div>
