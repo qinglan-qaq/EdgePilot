@@ -60,6 +60,22 @@ const NODE_TYPE_LABELS: Record<string, string> = {
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'timeout', 'cancelled'])
 
+/** Span 类型的中文名；未知类型原样返回，不猜测。 */
+const SPAN_TYPE_LABELS: Record<string, string> = {
+  workflow: '工作流',
+  agent: '智能体',
+  tool: '工具',
+  llm: '模型',
+  node: '节点',
+  retrieval: '检索',
+  prompt: '提示词',
+  chain: '链路',
+  http: 'HTTP',
+}
+
+/** Span 的失败终态；用于默认展开失败节点与错误标记。 */
+const FAILED_SPAN_STATUSES = new Set(['failed', 'timeout', 'cancelled'])
+
 export function runStatusLabel(status: string): string {
   return RUN_STATUS_LABELS[status] ?? status
 }
@@ -87,6 +103,16 @@ export function formatTriggerType(type: string): string {
 
 export function nodeTypeLabel(type: string): string {
   return NODE_TYPE_LABELS[type] ?? type
+}
+
+/** span_type 的中文标签；未知类型原样显示。 */
+export function spanTypeLabel(type: string): string {
+  return SPAN_TYPE_LABELS[type] ?? type
+}
+
+/** 失败终态（failed / timeout / cancelled）；未知状态按非失败处理。 */
+export function isFailedSpanStatus(status: string): boolean {
+  return FAILED_SPAN_STATUSES.has(status)
 }
 
 /** 毫秒耗时：不足 1 秒显示 ms，1 分钟内保留 1 位秒，更长保留 1 位分。 */

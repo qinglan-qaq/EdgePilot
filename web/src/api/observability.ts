@@ -65,19 +65,28 @@ export interface TraceDetail extends TraceSummary {
 
 /** Trace 树节点；children 由后端树接口递归返回。 */
 export interface SpanNode {
+  id?: number
   span_id: string
   parent_span_id?: string | null
   name: string
   span_type: string
   status: string
   attempt?: number | null
+  agent_id?: number | null
+  agent_version?: number | null
+  workflow_id?: number | null
   node_id?: string | null
   tool_id?: string | null
   start_time?: string | null
   end_time?: string | null
   duration_ms?: number | null
+  input?: unknown
+  output?: unknown
   error?: unknown
   retry_count?: number | null
+  meta?: unknown
+  links?: unknown
+  created_at?: string | null
   orphan?: boolean
   children?: SpanNode[]
   [key: string]: unknown
@@ -113,11 +122,46 @@ export interface ToolCallRecord {
 export interface RetrievalRecord {
   id?: number
   query?: string | null
+  rewritten_query?: string | null
   retrieval_strategy?: string | null
+  embedding_model?: string | null
   vector_store?: string | null
+  reranker_model?: string | null
   top_k?: number | null
+  similarity_threshold?: number | null
+  retrieved_documents?: unknown[] | null
+  reranked_documents?: unknown[] | null
+  final_context?: string | null
   duration_ms?: number | null
+  error?: unknown
   [key: string]: unknown
+}
+
+/** Prompt 执行记录；只读展示，缺失字段保持 null，不做补齐。 */
+export interface PromptExecutionRecord {
+  id?: number
+  trace_id?: string | null
+  span_id?: string | null
+  template_id?: number | null
+  template_version?: number | null
+  variables?: unknown
+  rendered_messages?: unknown
+  prompt_hash?: string | null
+  render_status?: string | null
+  model_name?: string | null
+  created_at?: string | null
+  [key: string]: unknown
+}
+
+/** trace 事件；sequence_number 在同一 trace 内唯一且按升序展示。 */
+export interface SpanEvent {
+  id: number
+  trace_id: string
+  span_id: string | null
+  event_type: string
+  event_data: unknown
+  sequence_number: number
+  created_at: string | null
 }
 
 /** GET /observability/spans/{span_id} 的详情。 */
@@ -132,6 +176,8 @@ export interface SpanDetail extends SpanNode {
    */
   retrievals?: RetrievalRecord[]
   retrieval_records?: RetrievalRecord[]
+  /** Prompt 执行记录；表缺失或没有记录时为空数组。 */
+  prompt_executions?: PromptExecutionRecord[]
 }
 
 function tracePath(traceId: string): string {
@@ -154,6 +200,16 @@ export function getTrace(traceId: string): Promise<TraceDetail> {
 /** 读取 Trace 的 Span 树（根节点数组，children 递归）。 */
 export function getTraceTree(traceId: string): Promise<SpanNode[]> {
   return api.get<SpanNode[]>(`${tracePath(traceId)}/tree`)
+}
+
+/** 读取 Trace 的扁平 Span 列表（时间线用），后端按 start_time、id 升序。 */
+export function listTraceSpans(traceId: string): Promise<SpanNode[]> {
+  return api.get<SpanNode[]>(`${tracePath(traceId)}/spans`)
+}
+
+/** 读取 Trace 的全部事件，后端按 sequence_number 升序。 */
+export function listTraceEvents(traceId: string): Promise<SpanEvent[]> {
+  return api.get<SpanEvent[]>(`${tracePath(traceId)}/events`)
 }
 
 /** 读取 Span 详情及关联的 LLM / 工具 / 检索记录。 */

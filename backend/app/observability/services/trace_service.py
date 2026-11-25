@@ -8,14 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFound
 from app.core.pagination import PageParams, PageResult
 from app.core.tenancy import get_tenant_id
-from app.observability.models import LLMCall, Span, ToolCall, Trace
+from app.observability.models import LLMCall, Span, ToolCall, Trace, TraceEvent
 
 # key 为响应中的输出键，value 为实际表名。retrieval_records 要等 0004 迁移；
-# 在此之前 span 详情对该组返回空列表，不能报错。
+# 在此之前 span 详情对该组返回空列表，不能报错。prompt_executions 同理：
+# 表由 0003 创建，但仍走 information_schema 探测，缺表时返回空列表。
 _RELATED_TABLES = {
     "llm_calls": "llm_calls",
     "tool_calls": "tool_calls",
     "retrieval_records": "retrieval_records",
+    "prompt_executions": "prompt_executions",
 }
 
 # `failed=true` 只匹配终态失败状态；running / succeeded 等不算失败。
@@ -110,6 +112,18 @@ def _span_dict(row: Span) -> dict:
         "retry_count": row.retry_count,
         "meta": row.meta,
         "links": row.links,
+        "created_at": row.created_at,
+    }
+
+
+def _event_dict(row: TraceEvent) -> dict:
+    return {
+        "id": row.id,
+        "trace_id": row.trace_id,
+        "span_id": row.span_id,
+        "event_type": row.event_type,
+        "event_data": row.event_data,
+        "sequence_number": row.sequence_number,
         "created_at": row.created_at,
     }
 
@@ -249,6 +263,44 @@ async def get_tree(session: AsyncSession, trace_id: str) -> list[dict]:
         )
     ).all()
     return build_tree([_span_dict(row) for row in rows])
+
+
+async def list_trace_spans(session: AsyncSession, trace_id: str) -> list[dict]:
+    """返回 trace 的扁平 span 列表（时间线用），按 start_time、id 升序。
+
+    先校验 trace 存在且属于当前租户；跨租户与不存在一律 404。
+    """
+    await get_trace(session, trace_id)
+    rows = (
+        await session.scalars(
+            select(Span)
+            .where(
+                Span.tenant_id == get_tenant_id(),
+                Span.trace_id == trace_id,
+            )
+            .order_by(Span.start_time, Span.id)
+        )
+    ).all()
+    return [_span_dict(row) for row in rows]
+
+
+async def list_trace_events(session: AsyncSession, trace_id: str) -> list[dict]:
+    """返回 trace 的全部事件，按 sequence_number 升序。
+
+    单 trace 事件量有限，不分页；查询强制限定 trace_id + tenant_id。
+    """
+    await get_trace(session, trace_id)
+    rows = (
+        await session.scalars(
+            select(TraceEvent)
+            .where(
+                TraceEvent.tenant_id == get_tenant_id(),
+                TraceEvent.trace_id == trace_id,
+            )
+            .order_by(TraceEvent.sequence_number, TraceEvent.id)
+        )
+    ).all()
+    return [_event_dict(row) for row in rows]
 
 
 async def _related_records(session: AsyncSession, span_id: str) -> dict[str, list[dict]]:

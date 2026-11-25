@@ -90,6 +90,26 @@ async def get_trace_tree(
     return ok(await trace_service.get_tree(session, trace_id))
 
 
+@router.get("/traces/{trace_id}/spans")
+async def list_trace_spans(
+    trace_id: str,
+    _user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """扁平 Span 列表（时间线用），按 start_time、id 升序。"""
+    return ok(await trace_service.list_trace_spans(session, trace_id))
+
+
+@router.get("/traces/{trace_id}/events")
+async def list_trace_events(
+    trace_id: str,
+    _user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """trace 事件列表，按 sequence_number 升序；不分页。"""
+    return ok(await trace_service.list_trace_events(session, trace_id))
+
+
 @router.get("/traces/{trace_id}/stream")
 async def stream_trace(
     trace_id: str,
