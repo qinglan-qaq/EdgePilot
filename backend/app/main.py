@@ -1,14 +1,21 @@
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.core.logging import configure_logging
+from app.core.metrics import (
+    http_request_duration,
+    http_request_total,
+    render,
+)
 from app.core.middleware import RequestIdMiddleware, request_id_var
 
 
@@ -39,6 +46,24 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, validation_handler)
 
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    """记录 HTTP 数量与耗时；path 使用路由模板，避免高基数标签。"""
+
+    async def dispatch(self, request: Request, call_next):
+        started = time.perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        path = getattr(route, "path", None) or "unmatched"
+        method = request.method
+        http_request_total.labels(
+            method=method, path=path, status=str(response.status_code)
+        ).inc()
+        http_request_duration.labels(method=method, path=path).observe(
+            time.perf_counter() - started
+        )
+        return response
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings)
@@ -49,12 +74,18 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="EdgePilot API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(MetricsMiddleware)
     register_exception_handlers(app)
     app.include_router(api_router)
 
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok", "env": settings.env}
+
+    @app.get("/metrics")
+    async def metrics() -> Response:
+        body, content_type = render()
+        return Response(content=body, media_type=content_type)
 
     return app
 

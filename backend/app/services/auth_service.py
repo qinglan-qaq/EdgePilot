@@ -4,7 +4,6 @@
 才设置租户上下文。审计写入失败绝不能影响登录主流程。
 """
 
-import logging
 import time
 
 from sqlalchemy import select
@@ -12,15 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import Unauthorized
-from app.core.middleware import request_id_var
 from app.core.security import create_token, decode_token, verify_password
 from app.core.tenancy import set_tenant_id
 from app.core.token_denylist import deny, is_denied
-from app.models.audit import AuditLog
 from app.models.user import User
 from app.schemas.auth import TokenPair
-
-logger = logging.getLogger(__name__)
+from app.services.audit_service import AuditService
 
 
 class AuthService:
@@ -96,24 +92,13 @@ class AuthService:
     async def _audit_login(
         self, user: User, *, ip: str | None, user_agent: str | None
     ) -> None:
-        try:
-            self.session.add(
-                AuditLog(
-                    tenant_id=user.tenant_id,
-                    user_id=user.id,
-                    action="auth.login",
-                    resource_type="user",
-                    resource_id=user.id,
-                    ip=ip,
-                    user_agent=user_agent,
-                    detail={"email": user.email},
-                    trace_id=request_id_var.get(),
-                )
-            )
-            await self.session.commit()
-        except Exception as exc:  # noqa: BLE001 - 审计失败不影响登录
-            logger.warning("auth.login audit write failed: %s", exc)
-            try:
-                await self.session.rollback()
-            except Exception:  # noqa: BLE001
-                pass
+        await AuditService.write(
+            self.session,
+            action="auth.login",
+            resource_type="user",
+            resource_id=user.id,
+            detail={"email": user.email},
+            user=user,
+            ip=ip,
+            user_agent=user_agent,
+        )
