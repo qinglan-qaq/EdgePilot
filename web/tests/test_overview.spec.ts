@@ -7,6 +7,7 @@ import type { AnalyticsOverview, OverviewCards, OverviewCharts } from '../src/ap
 
 vi.mock('@/api/observability', () => ({
   getAnalyticsOverview: vi.fn(),
+  listTraces: vi.fn(),
 }))
 
 import { ApiError } from '../src/api/http'

@@ -10,6 +10,7 @@ import ModulePending from '@/views/ModulePending.vue'
 import NotFound from '@/views/NotFound.vue'
 import ObservabilityLayout from '@/views/observability/ObservabilityLayout.vue'
 import Overview from '@/views/observability/Overview.vue'
+import Traces from '@/views/observability/Traces.vue'
 import RunDetail from '@/views/RunDetail.vue'
 import Runs from '@/views/Runs.vue'
 import WorkflowEditor from '@/views/WorkflowEditor.vue'
@@ -192,14 +193,25 @@ const routes: RouteRecordRaw[] = [
           {
             path: 'traces',
             name: 'observability-traces',
-            component: ModulePending,
+            component: Traces,
             meta: {
               title: 'Trace 查询',
               nav: true,
               roles: ALL_ROLES,
               activeMenu: '/observability/traces',
+            },
+          },
+          {
+            path: 'traces/:traceId',
+            name: 'observability-trace-detail',
+            component: ModulePending,
+            meta: {
+              title: 'Trace 详情',
+              nav: false,
+              roles: ALL_ROLES,
+              activeMenu: '/observability/traces',
               description:
-                'Trace 列表、过滤条件与三栏详情将在 Task 15/16 接入真实观测 API；本页不展示模拟列表或占位图表。',
+                'Trace 三栏详情（Span 树 / 时间线 / 检查器）将在 Task 16 接入真实观测 API；本页不展示模拟 Trace 数据。',
             },
           },
           {

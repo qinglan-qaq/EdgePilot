@@ -18,6 +18,38 @@ export interface TraceSummary {
   total_cost: DecimalLike
 }
 
+/** GET /observability/traces 的分页响应。 */
+export interface TracePage {
+  items: TraceSummary[]
+  total: number
+  page: number
+  size: number
+}
+
+/** GET /observability/traces 的查询参数；布尔筛选按真实布尔值发送。 */
+export interface ListTracesParams {
+  page?: number
+  size?: number
+  status?: string
+  /** trace_id 前缀匹配。 */
+  trace_id?: string
+  source?: string
+  user_id?: string
+  /** 存在该 agent span（span_type='agent'）的 trace。 */
+  agent_id?: number
+  /** llm_calls.model_name 或 provider 精确匹配。 */
+  model?: string
+  /** tool_calls.tool_id 或 tool_name 精确匹配。 */
+  tool?: string
+  start_from?: string
+  start_to?: string
+  min_duration_ms?: number
+  /** true 时仅返回 failed / timeout / cancelled。 */
+  failed?: boolean
+  /** true 时仅返回 duration_ms >= 3000 的 trace。 */
+  slow?: boolean
+}
+
 /** GET /observability/traces/{trace_id} 的完整详情。 */
 export interface TraceDetail extends TraceSummary {
   id: number
@@ -104,6 +136,14 @@ export interface SpanDetail extends SpanNode {
 
 function tracePath(traceId: string): string {
   return `/observability/traces/${encodeURIComponent(traceId)}`
+}
+
+/**
+ * 分页读取 Trace 列表。筛选全部交给后端完成，前端不得拉全量再过滤；
+ * 调用方负责只传入有值的字段。
+ */
+export function listTraces(params: ListTracesParams = {}): Promise<TracePage> {
+  return api.get<TracePage>('/observability/traces', { params })
 }
 
 /** 读取 Trace 汇总详情。 */

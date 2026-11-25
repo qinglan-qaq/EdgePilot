@@ -2,13 +2,13 @@
 
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFound
 from app.core.pagination import PageParams, PageResult
 from app.core.tenancy import get_tenant_id
-from app.observability.models import Span, Trace
+from app.observability.models import LLMCall, Span, ToolCall, Trace
 
 # key 为响应中的输出键，value 为实际表名。retrieval_records 要等 0004 迁移；
 # 在此之前 span 详情对该组返回空列表，不能报错。
@@ -17,6 +17,12 @@ _RELATED_TABLES = {
     "tool_calls": "tool_calls",
     "retrieval_records": "retrieval_records",
 }
+
+# `failed=true` 只匹配终态失败状态；running / succeeded 等不算失败。
+FAILED_TRACE_STATUSES = ("failed", "timeout", "cancelled")
+
+# `slow=true` 的阈值：trace duration_ms >= 3000ms（设计稿 §9 的“慢请求”口径）。
+SLOW_TRACE_THRESHOLD_MS = 3000.0
 
 
 def build_tree(spans: list[dict]) -> list[dict]:
@@ -108,6 +114,45 @@ def _span_dict(row: Span) -> dict:
     }
 
 
+def _agent_trace_ids(tenant_id, agent_id: int):
+    """存在指定 agent 的 trace。子查询同时限定 tenant_id，避免跨租户命中。"""
+    return select(Span.trace_id).where(
+        Span.tenant_id == tenant_id,
+        Span.span_type == "agent",
+        Span.agent_id == agent_id,
+    )
+
+
+def _model_trace_ids(tenant_id, model: str):
+    """存在指定模型（model_name 或 provider）调用的 trace。
+
+    llm_calls 只带 span_id，没有 trace_id；先在子查询内按租户 join spans 取
+    trace_id，外层再 IN，避免主查询 join 造成重复行。两张表都带 tenant_id。
+    """
+    return (
+        select(Span.trace_id)
+        .join(LLMCall, LLMCall.span_id == Span.span_id)
+        .where(
+            Span.tenant_id == tenant_id,
+            LLMCall.tenant_id == tenant_id,
+            or_(LLMCall.model_name == model, LLMCall.provider == model),
+        )
+    )
+
+
+def _tool_trace_ids(tenant_id, tool: str):
+    """存在指定工具（tool_id 或 tool_name）调用的 trace；租户规则同上。"""
+    return (
+        select(Span.trace_id)
+        .join(ToolCall, ToolCall.span_id == Span.span_id)
+        .where(
+            Span.tenant_id == tenant_id,
+            ToolCall.tenant_id == tenant_id,
+            or_(ToolCall.tool_id == tool, ToolCall.tool_name == tool),
+        )
+    )
+
+
 async def list_traces(
     session: AsyncSession,
     params: PageParams,
@@ -117,8 +162,23 @@ async def list_traces(
     start_from: datetime | None = None,
     start_to: datetime | None = None,
     min_duration_ms: float | None = None,
+    source: str | None = None,
+    user_id: str | None = None,
+    agent_id: int | None = None,
+    model: str | None = None,
+    tool: str | None = None,
+    failed: bool | None = None,
+    slow: bool | None = None,
 ) -> PageResult[dict]:
-    filters = [Trace.tenant_id == get_tenant_id()]
+    """按过滤条件分页返回 trace 摘要，全部条件按 AND 组合且始终限定租户。
+
+    ``failed=True`` 表示只返回终态失败（``failed`` / ``timeout`` / ``cancelled``）；
+    ``slow=True`` 表示只返回 ``duration_ms >= 3000`` 的 trace。两者为 ``False``
+    或缺省时不附加该条件。``agent_id`` / ``model`` / ``tool`` 用带 tenant_id 的
+    子查询匹配关联记录，不改变外层排序与行数。
+    """
+    tenant_id = get_tenant_id()
+    filters = [Trace.tenant_id == tenant_id]
     if status is not None:
         filters.append(Trace.status == status)
     if trace_id_prefix:
@@ -129,6 +189,20 @@ async def list_traces(
         filters.append(Trace.start_time <= start_to)
     if min_duration_ms is not None:
         filters.append(Trace.duration_ms >= min_duration_ms)
+    if source is not None:
+        filters.append(Trace.source == source)
+    if user_id is not None:
+        filters.append(Trace.user_id == user_id)
+    if agent_id is not None:
+        filters.append(Trace.trace_id.in_(_agent_trace_ids(tenant_id, agent_id)))
+    if model:
+        filters.append(Trace.trace_id.in_(_model_trace_ids(tenant_id, model)))
+    if tool:
+        filters.append(Trace.trace_id.in_(_tool_trace_ids(tenant_id, tool)))
+    if failed:
+        filters.append(Trace.status.in_(FAILED_TRACE_STATUSES))
+    if slow:
+        filters.append(Trace.duration_ms >= SLOW_TRACE_THRESHOLD_MS)
 
     total = await session.scalar(
         select(func.count()).select_from(Trace).where(*filters)

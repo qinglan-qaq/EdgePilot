@@ -25,9 +25,34 @@ async def list_traces(
     start_from: datetime | None = None,
     start_to: datetime | None = None,
     min_duration_ms: float | None = None,
+    source: str | None = Query(default=None, description="来源精确匹配"),
+    user_id: str | None = Query(default=None, description="用户 ID 精确匹配"),
+    agent_id: int | None = Query(
+        default=None, description="存在该 agent span（span_type='agent'）的 trace"
+    ),
+    model: str | None = Query(
+        default=None, description="llm_calls.model_name 或 provider 精确匹配"
+    ),
+    tool: str | None = Query(
+        default=None, description="tool_calls.tool_id 或 tool_name 精确匹配"
+    ),
+    failed: bool | None = Query(
+        default=None,
+        description="仅终态失败 trace（failed / timeout / cancelled）；false 不过滤",
+    ),
+    slow: bool | None = Query(
+        default=None, description="仅慢 trace（duration_ms >= 3000）；false 不过滤"
+    ),
     _user=Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+    """分页查询 Trace 列表。
+
+    全部过滤条件按 AND 组合并强制限定当前租户。``failed=true`` 表示终态失败
+    （``failed`` / ``timeout`` / ``cancelled``）；``slow=true`` 表示
+    ``duration_ms >= 3000ms``。``agent_id`` / ``model`` / ``tool`` 通过关联
+    记录匹配 trace，不产生重复行。
+    """
     page = await trace_service.list_traces(
         session,
         params,
@@ -36,6 +61,13 @@ async def list_traces(
         start_from=start_from,
         start_to=start_to,
         min_duration_ms=min_duration_ms,
+        source=source,
+        user_id=user_id,
+        agent_id=agent_id,
+        model=model,
+        tool=tool,
+        failed=failed,
+        slow=slow,
     )
     return ok(page.model_dump())
 
