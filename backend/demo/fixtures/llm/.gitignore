@@ -1,0 +1,2 @@
+# 演示夹具由 scripts/seed_workflow_demo.py 按真实库事件生成，不入库。
+*.json

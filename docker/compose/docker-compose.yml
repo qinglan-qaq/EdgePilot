@@ -73,6 +73,11 @@ services:
       OBS_ENABLED: "true"
       OBS_CAPTURE_MODE: REDACTED
       LLM_MODE: mock
+      LLM_FIXTURE_DIR: demo/fixtures/llm
+    # 演示夹具由 scripts/seed_workflow_demo.py 按真实事件生成；镜像不打包
+    # demo 目录，开发栈只读挂载，避免把动态事件 id 固化进镜像。
+    volumes:
+      - ../../backend/demo/fixtures/llm:/app/backend/demo/fixtures/llm:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -101,6 +106,9 @@ services:
       OBS_ENABLED: "true"
       OBS_CAPTURE_MODE: REDACTED
       LLM_MODE: mock
+      LLM_FIXTURE_DIR: demo/fixtures/llm
+    volumes:
+      - ../../backend/demo/fixtures/llm:/app/backend/demo/fixtures/llm:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
+# 观测写入器只在进程内装配一次；主进程与每个 prefork 子进程各自持有。
+_obs_initialized = False
 
 
 def _build_celery_app() -> Celery:
@@ -41,7 +43,14 @@ def _build_celery_app() -> Celery:
     broker = (settings.celery_broker_url or "").strip() or settings.rabbitmq_url
     backend = (settings.celery_result_backend or "").strip() or None
 
-    app = Celery("edgepilot", broker=broker, backend=backend)
+    # 显式声明任务模块：Celery 默认 autodiscover 只找 ``app.tasks.tasks``，
+    # 不会加载 ``app.tasks.workflow_tasks``，导致 worker 把消息当作未注册任务丢弃。
+    app = Celery(
+        "edgepilot",
+        broker=broker,
+        backend=backend,
+        include=["app.tasks.workflow_tasks"],
+    )
     app.conf.update(
         # 结果不落库：运行状态以 workflow_runs 为准，避免重复存储。
         task_ignore_result=True,
@@ -66,7 +75,6 @@ def _build_celery_app() -> Celery:
             },
         },
     )
-    app.autodiscover_tasks(["app.tasks"])
     return app
 
 
@@ -142,27 +150,42 @@ def run_in_worker_loop(
 # ------------------------------------------------------------------- 生命周期
 
 
+async def _init_observability() -> None:
+    """为当前进程装配观测写入器并启动采集协程。
+
+    prefork 模式下任务在子进程执行，而 ``worker_ready`` 只在主进程触发；
+    子进程若不单独初始化，tracer 会拿到 ``NullWriter``，记录只入队不落库。
+    """
+    global _obs_initialized
+    if _obs_initialized:
+        return
+
+    settings = get_settings()
+    if not settings.obs_enabled:
+        _obs_initialized = True
+        return
+
+    from app.db import get_session_factory
+    from app.observability import get_tracer, set_writer
+    from app.observability.live import LiveLayer
+    from app.observability.writer import BatchWriter
+
+    set_writer(
+        BatchWriter(
+            get_session_factory(),
+            live=LiveLayer(settings.redis_url, settings.obs_live_ttl_seconds),
+        )
+    )
+    await get_tracer().collector.start()
+    _obs_initialized = True
+
+
 async def _on_worker_ready() -> None:
     """worker_ready 的一次性异步初始化；任何步骤失败都只记日志。"""
-    settings = get_settings()
-    if settings.obs_enabled:
-        try:
-            from app.db import get_session_factory
-            from app.observability import get_tracer, set_writer
-            from app.observability.live import LiveLayer
-            from app.observability.writer import BatchWriter
-
-            set_writer(
-                BatchWriter(
-                    get_session_factory(),
-                    live=LiveLayer(
-                        settings.redis_url, settings.obs_live_ttl_seconds
-                    ),
-                )
-            )
-            await get_tracer().collector.start()
-        except Exception:  # noqa: BLE001 - 观测初始化不得阻断 worker 启动
-            logger.exception("worker 观测初始化失败，继续启动")
+    try:
+        await _init_observability()
+    except Exception:  # noqa: BLE001 - 观测初始化不得阻断 worker 启动
+        logger.exception("worker 观测初始化失败，继续启动")
 
     try:
         from app.tasks.workflow_tasks import enqueue_stale_runs
@@ -184,6 +207,12 @@ def _init_worker_process(**_kwargs: Any) -> None:
         start_worker_loop()
     except Exception:  # noqa: BLE001 - 循环启动失败让 Celery 自己报错
         logger.exception("worker 进程事件循环启动失败")
+        return
+
+    try:
+        run_in_worker_loop(_init_observability, timeout=30)
+    except Exception:  # noqa: BLE001 - 观测初始化失败不影响消费任务
+        logger.exception("worker 子进程观测初始化失败，继续执行任务")
 
 
 @worker_ready.connect
