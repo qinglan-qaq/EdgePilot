@@ -1866,6 +1866,20 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **测试**：`test_domain_agent_schema.py` 覆盖六类模型的证据约束、`parse_output` 与 `output_schema_for`；`test_agent_domain_run.py` 用 `diagnosis_ok` / `diagnosis_no_evidence` 两个 fixture 验证成功落库与「缺证据 → 一次重试后 `agent_output_invalid`」。
 
+### Task 14 代码级展开（已实现）
+
+**文件**：`app/agents/supervisor.py`（`SupervisorLimits` / `Assignment` / `SupervisorResult` / `Supervisor` + 图节点）、`agents/prompts/supervisor.md`（plan/assignments 输出契约）、`tests/unit/agents/test_supervisor_budget.py`。
+
+**图结构**：`START → plan → [Send("agent", {assignment}) × N →] assess → plan | finalize → END`；并行 `agent` 节点只返回 `{"results": [entry]}`，由 `operator.add` 合并，`errors` 同为 additive reducer。planner / runner 均可注入，单测不触网不碰库。
+
+**预算落点（代码而非 prompt）**：`plan` 按 `max_agent_calls - len(results)` 切片，超出部分丢弃并记 `agent_call_limit: 已丢弃 N 个超出上限的派发`；`assess` 累加已回报 token，超 60k 记 `budget_exceeded` 且禁止再重规划；失败且 `replans < 2` 才回 `plan`；整体 `asyncio.wait_for(timeout_s)`，超时从共享缓冲返回已完成结果并记 `timeout`。
+
+**拒绝语义**：白名单仅 `device/vision/diagnosis/operations/report`，`tool` / `supervisor` 在派发前落 `supervisor_invalid_assignment`，runner 调用数为 0；无 LLM 时默认 planner 返回 `supervisor_planner_unavailable`，绝不编造计划。
+
+**结果状态**：全部派发成功且无告警 → `succeeded`；存在被丢弃/失败/告警但仍有结果 → `partial`；无任何结果 → `failed`。`finalize` 原样保留子输出与 `evidence[]`，`summary` 只做确定性计数。
+
+**测试**：`test_supervisor_budget.py` —— 第 7 次调用被拒并保留 6 条部分结果、重规划止于 2 次（planner 共 3 次）、越权类型零调用、35k×2 触发 `budget_exceeded` 停止重规划。
+
 ---
 
 ## P4 边缘与设备（契约级）
