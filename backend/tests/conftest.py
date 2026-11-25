@@ -8,6 +8,7 @@ other_tenant_token）。
 所有 session 都绑到同一个连接 + 外层事务，测试结束整体回滚。
 """
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -134,3 +135,46 @@ async def redis_client():
         yield client
     finally:
         await client.aclose()
+
+
+# ---------------------------------------------------------------- Task 12: LLM 夹具
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "llm"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def llm_fixtures():
+    """写入两个确定性 mock 响应，供 integration 测试使用。"""
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    (FIXTURE_DIR / "device_ok.json").write_text(json.dumps({
+        "content": '{"answer": "设备在线", "evidence": [{"type": "metric", "ref": "m1"}]}',
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+    }, ensure_ascii=False), encoding="utf-8")
+    (FIXTURE_DIR / "device_bad.json").write_text(json.dumps({
+        "content": '{"answer": 123}',       # 类型错且缺 evidence
+        "finish_reason": "stop",
+        "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16},
+    }, ensure_ascii=False), encoding="utf-8")
+    return FIXTURE_DIR
+
+
+async def _make_published_agent(client, admin_token, name: str, mock_fixture: str) -> int:
+    payload = {"name": name, "agent_type": "device",
+               "prompt_template_id": None, "prompt_version": None,
+               "config": {"system_prompt": "你是设备诊断助手", "mock_fixture": mock_fixture}}
+    created = (await client.post("/api/v1/agents", json=payload,
+                                 headers=auth_headers(admin_token))).json()["data"]
+    await client.post(f"/api/v1/agents/{created['id']}/publish",
+                      headers=auth_headers(admin_token))
+    return created["id"]
+
+
+@pytest.fixture
+async def seeded_agent(client, admin_token, llm_fixtures):
+    return await _make_published_agent(client, admin_token, "device-check", "device_ok")
+
+
+@pytest.fixture
+async def seeded_agent_bad_output(client, admin_token, llm_fixtures):
+    return await _make_published_agent(client, admin_token, "device-bad", "device_bad")

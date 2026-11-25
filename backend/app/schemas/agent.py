@@ -42,6 +42,12 @@ class AgentUpdate(BaseModel):
     tool_ids: list[int] | None = None
 
 
+class AgentTestIn(BaseModel):
+    """单 Agent 试跑请求体：任务参数原样透传给 Agent。"""
+
+    task: dict
+
+
 class AgentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
