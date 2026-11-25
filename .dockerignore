@@ -1,0 +1,12 @@
+# 构建上下文为仓库根（docker/compose 中的 build.context: ../..）
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.venv
+var/
+node_modules/
+.git
+tests/
+**/tests/
+docs/
+frontend/

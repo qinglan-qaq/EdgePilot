@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: edgepilot
+          POSTGRES_PASSWORD: edgepilot
+          POSTGRES_DB: edgepilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U edgepilot -d edgepilot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://edgepilot:edgepilot@localhost:5432/edgepilot
+      TEST_DATABASE_URL: postgresql+asyncpg://edgepilot:edgepilot@localhost:5432/edgepilot_test
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-test-secret-0123456789abcdef
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Create test database
+        run: PGPASSWORD=edgepilot psql -h localhost -U edgepilot -d edgepilot -c 'CREATE DATABASE edgepilot_test'
+
+      - name: Run migrations
+        run: cd backend && python -m alembic upgrade head
+
+      - name: Run tests
+        run: cd backend && python -m pytest tests -q

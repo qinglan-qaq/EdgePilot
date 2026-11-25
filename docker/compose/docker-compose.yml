@@ -40,7 +40,76 @@ services:
       - ../mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto_data:/mosquitto/data
 
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: edgepilot
+      RABBITMQ_DEFAULT_PASS: edgepilot
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # 应用服务仅在 --profile app 时启动；worker 复用 api 镜像。
+  # build.context 相对本文件目录 docker/compose/，上两级即仓库根。
+  api:
+    image: edgepilot-api:local
+    build:
+      context: ../..
+      dockerfile: docker/api.Dockerfile
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edgepilot:edgepilot@postgres:5432/edgepilot
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://edgepilot:edgepilot@rabbitmq:5672//
+      MQTT_HOST: mosquitto
+      OBS_ENABLED: "true"
+      OBS_CAPTURE_MODE: REDACTED
+      LLM_MODE: mock
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    image: edgepilot-api:local
+    profiles: ["app"]
+    command: ["celery", "-A", "app.worker", "worker", "-Q", "q.workflow,q.ingest,q.notify", "-c", "2"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://edgepilot:edgepilot@postgres:5432/edgepilot
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://edgepilot:edgepilot@rabbitmq:5672//
+      MQTT_HOST: mosquitto
+      OBS_ENABLED: "true"
+      OBS_CAPTURE_MODE: REDACTED
+      LLM_MODE: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   pg_data:
   redis_data:
   mosquitto_data:
+  rabbitmq_data:

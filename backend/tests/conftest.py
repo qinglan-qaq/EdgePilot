@@ -12,6 +12,7 @@ import os
 import uuid
 
 import pytest
+import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -123,3 +124,12 @@ async def viewer_token(client, seeded_users):
 @pytest.fixture
 async def other_tenant_token(client, seeded_users):
     return await login_token(client, OTHER_ADMIN_EMAIL)
+
+
+@pytest.fixture
+async def redis_client():
+    client = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+    try:
+        yield client
+    finally:
+        await client.aclose()
