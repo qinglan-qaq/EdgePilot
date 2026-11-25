@@ -49,6 +49,8 @@ export interface WorkflowRun {
   output: unknown
   error: string | null
   trace_id: string | null
+  /** 是否确有 traces 记录；仅凭 trace_id 无法判断观测写入是否成功。 */
+  trace_available?: boolean | null
   /** 后端详情会返回；旧版本或列表响应可能缺省。 */
   root_span_id?: string | null
   created_at: string | null

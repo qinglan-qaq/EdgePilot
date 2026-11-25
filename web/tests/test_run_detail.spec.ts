@@ -454,6 +454,36 @@ describe('运行详情页', () => {
     expect(wrapper.text()).toContain('应急预案第 3 条')
   })
 
+  it('运行未产出报告时，已完成节点的证据仍可查看并明确提示来源', async () => {
+    vi.mocked(getRun).mockResolvedValue(
+      makeRun({
+        nodes: [
+          makeNode({
+            node_id: 'vision',
+            node_type: 'agent',
+            status: 'succeeded',
+            approval: null,
+            output: {
+              evidence: [
+                { type: 'event_id', ref: '35', snippet: '大厅人员聚集' },
+              ],
+            },
+            finished_at: '2026-11-22T10:01:00',
+          }),
+        ],
+      }),
+    )
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const emptyHint = wrapper.find('[data-test="run-output-empty"]')
+    expect(emptyHint.text()).toContain('报告尚未生成')
+    expect(emptyHint.text()).toContain('已完成节点采集的证据')
+    const openEvidence = wrapper.find('[data-test="open-evidence"]')
+    expect(openEvidence.text()).toContain('查看证据 (1)')
+  })
+
   it('pending 运行只提示等待 worker 领取，不伪造 trace/耗时，viewer 无写操作', async () => {
     authState.role = 'viewer'
     vi.mocked(getRun).mockResolvedValue(

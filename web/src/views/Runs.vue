@@ -206,8 +206,19 @@ onMounted(() => {
 
           <el-table-column label="Trace" width="100">
             <template #default="{ row }">
-              <span v-if="row.trace_id" class="runs-page__trace" :title="row.trace_id">
+              <span
+                v-if="row.trace_available === true"
+                class="runs-page__trace"
+                :title="row.trace_id"
+              >
                 已采集
+              </span>
+              <span
+                v-else-if="row.trace_id"
+                class="runs-page__muted"
+                title="trace_id 已分配，但 traces 表没有对应记录"
+              >
+                记录缺失
               </span>
               <span v-else class="runs-page__muted">未采集</span>
             </template>

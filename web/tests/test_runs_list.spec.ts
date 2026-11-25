@@ -105,6 +105,35 @@ describe('运行列表页', () => {
     expect(text).toContain('—')
   })
 
+  it('trace_id 不等于已采集：只有 traces 记录存在时才显示已采集', async () => {
+    vi.mocked(listRuns).mockResolvedValue({
+      items: [
+        makeRun({
+          id: 21,
+          trace_id: 'a'.repeat(32),
+          trace_available: false,
+        }),
+        makeRun({
+          id: 22,
+          trace_id: 'b'.repeat(32),
+          trace_available: true,
+        }),
+      ],
+      total: 2,
+      page: 1,
+      size: 20,
+    })
+
+    const wrapper = mountPage()
+    await flushPromises()
+
+    const rows = wrapper.findAll('.el-table__row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.text()).toContain('记录缺失')
+    expect(rows[0]?.text()).not.toContain('已采集')
+    expect(rows[1]?.text()).toContain('已采集')
+  })
+
   it('状态筛选重置到第一页，并只在有值时才携带 status', async () => {
     vi.mocked(listRuns)
       .mockResolvedValueOnce({ items: [makeRun()], total: 45, page: 1, size: 20 })

@@ -528,7 +528,10 @@ onBeforeUnmount(() => {
               data-test="run-output-json"
             >{{ formatJson(run.output) }}</pre>
             <p v-else class="run-detail__muted" data-test="run-output-empty">
-              本次运行未产生输出。
+              <template v-if="evidence.length > 0">
+                报告尚未生成；可查看已完成节点采集的证据。
+              </template>
+              <template v-else>本次运行未产生输出。</template>
             </p>
           </section>
 
