@@ -1935,6 +1935,18 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **P4 退出验收**：`make demo` 后 `/nodes` 显示 2 个在线节点；杀掉 edge-agent 容器 15s 后状态转 `offline`；重启后恢复 `online` 且事件无重复。
 
+### Task 17 代码级展开（已实现）
+
+- 包结构：`edge-agent/edge_agent/{config,topics,outbox,mqtt_client,registry,heartbeat,simulator,main}.py`；`devices/`、`pipeline/` 仅为 Task 18/19 占位，无假实现。
+- Outbox 表：`pending_messages(seq INTEGER PRIMARY KEY AUTOINCREMENT, topic, payload, qos, retain, created_at, attempts DEFAULT 0, last_error)`；WAL + `busy_timeout=5000`，`threading.Lock` + `check_same_thread=False`。
+- 入队补全：dict 载荷缺 `msg_id` 时补 uuid4 hex、缺 `sent_at` 时补 UTC ISO，入库即为补全后的载荷，重放内容与断网时一致；重复 `msg_id` 允许存在，由服务端去重。
+- ack 语义：`flush` 按 `seq` 升序逐条 `publish`；成功即 `ack`（DELETE），异常 `fail`（`attempts+1`、写 `last_error`）并停止本轮，剩余留待下次重连；已 ack 的 `seq` 永不重发，整体为至少一次投递。
+- 心跳：`HeartbeatPublisher` 默认 `interval_s=5.0`，`tick()` 以 QoS 0 / retain=False 发布；离线直接丢弃、不落 outbox。`collect_metrics()` 在 psutil 不可用或单项读取失败时为 `None`，绝不伪造 0；`gpu` 无真实探针恒为 `None`。
+- 注册：`edge/{node_key}/register` QoS 1；每次构建新 `msg_id`，`node_key/os/arch/agent_version` 稳定，离线写入 outbox 等重连补发。
+- LWT / 重连：构造时在 `edge/{node_key}/status` 设 retained `offline`；`on_connect` 发布 retained `online`、订阅 `edge/{node_key}/cmd/+`（QoS 1）并同步 `flush` outbox。`reconnect_delay(attempt)` 为 1,2,4,8,16,30,30，paho `reconnect_delay_set(1, 30)`。
+- 按主题持久化：register / event / task ack 失败入队；heartbeat / status 不持久化（过期数据无补发价值）。
+- 测试与入口：`edge-agent/tests/test_outbox.py` 覆盖 5 分钟断网不丢不重、失败重试不重复、离线注册/事件补发、5s 心跳字段、LWT 与退避；`make test-edge` 独立运行，不依赖网络或数据库。
+
 ---
 
 ## P5 视觉与 RAG（契约级）

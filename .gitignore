@@ -24,6 +24,13 @@ web/dist/
 
 # Runtime data
 var/
+edge-agent/var/
+
+# Edge agent SQLite outbox（运行时数据，不提交）
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
 
 # Test / coverage artifacts
 .pytest_cache/

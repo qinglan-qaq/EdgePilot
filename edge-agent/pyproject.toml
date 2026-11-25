@@ -1,0 +1,15 @@
+[project]
+name = "edgepilot-edge-agent"
+version = "0.1.0"
+description = "EdgePilot edge agent: registration, 5s heartbeat, durable SQLite outbox"
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.0",
+    "psutil>=5.9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
