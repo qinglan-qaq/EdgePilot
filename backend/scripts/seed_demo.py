@@ -208,38 +208,51 @@ async def _ensure_events(
     now: datetime,
     snapshot_dir: Path,
 ) -> tuple[int, int]:
-    """确保 200 条演示事件；返回 (新建事件数, 快照文件数)。"""
+    """确保 200 条演示事件；返回 (新建事件数, 本次补写的快照文件数)。"""
     keys = [
         f"seed:demo:{zone_index}:{index:03d}"
         for zone_index, (_name, _node, _zone, count) in enumerate(DEMO_CAMERAS)
         for index in range(count)
     ]
-    existing = set(
-        (
-            await session.scalars(
-                select(VisionEvent.dedup_key).where(
-                    VisionEvent.tenant_id == tenant_id,
-                    VisionEvent.dedup_key.in_(keys),
-                )
+    existing_rows = (
+        await session.execute(
+            select(VisionEvent.dedup_key, VisionEvent.snapshot_path).where(
+                VisionEvent.tenant_id == tenant_id,
+                VisionEvent.dedup_key.in_(keys),
             )
-        ).all()
-    )
+        )
+    ).all()
+    existing = {row.dedup_key: row.snapshot_path for row in existing_rows}
 
     created = 0
+    snapshots_written = 0
     global_index = 0
     for zone_index, (_name, node_index, zone, count) in enumerate(DEMO_CAMERAS):
         device = devices[zone_index]
         for index in range(count):
             dedup_key = f"seed:demo:{zone_index}:{index:03d}"
             occurred_at = now - timedelta(minutes=(global_index * 7 + zone_index * 13) % 1439)
-            snapshot_path = None
+            is_new = dedup_key not in existing
+            snapshot_path = None if is_new else existing[dedup_key]
             if global_index < SNAPSHOT_COUNT:
-                day = occurred_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
-                relative = Path("snapshots") / "events" / day / f"demo-{global_index:02d}.png"
-                _demo_png(snapshot_dir / relative, global_index)
-                snapshot_path = relative.as_posix()
+                if is_new:
+                    day = occurred_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
+                    relative = (
+                        Path("snapshots") / "events" / day / f"demo-{global_index:02d}.png"
+                    )
+                    _demo_png(snapshot_dir / relative, global_index)
+                    snapshot_path = relative.as_posix()
+                    snapshots_written += 1
+                elif snapshot_path:
+                    # 已有事件只补缺失文件，沿用库内路径，避免跨天重跑堆出新目录。
+                    relative = Path(snapshot_path)
+                    if not relative.is_absolute() and ".." not in relative.parts:
+                        target = snapshot_dir / relative
+                        if not target.is_file():
+                            _demo_png(target, global_index)
+                            snapshots_written += 1
 
-            if dedup_key not in existing:
+            if is_new:
                 session.add(
                     VisionEvent(
                         tenant_id=tenant_id,
@@ -268,7 +281,7 @@ async def _ensure_events(
                 created += 1
             global_index += 1
     await session.flush()
-    return created, SNAPSHOT_COUNT
+    return created, snapshots_written
 
 
 async def _ensure_documents(

@@ -130,6 +130,10 @@ class RagService:
         vectors: list[list[float] | None] = [None] * len(chunks)
         if embedding_available:
             embedded = await self.embedder.embed([chunk.content for chunk in chunks])
+            if len(embedded) != len(chunks):
+                raise ValueError(
+                    f"embedding provider 返回 {len(embedded)} 条向量，期望 {len(chunks)} 条"
+                )
             ensure_dimension(embedded, dimension=EMBEDDING_DIMENSION)
             vectors = list(embedded)
 

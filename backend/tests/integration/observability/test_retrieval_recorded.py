@@ -161,3 +161,47 @@ async def test_retrieval_with_obs_disabled_still_works(session, session_factory)
     assert outcome.results
     count = await session.scalar(text("SELECT count(*) FROM retrieval_records"))
     assert count == 0
+
+
+class ExplodingTracer:
+    def start_span(self, *_args, **_kwargs):
+        raise RuntimeError("tracer down")
+
+
+class ExplodingSpan:
+    def set_input(self, *_args, **_kwargs):
+        raise RuntimeError("span input down")
+
+    def set_output(self, *_args, **_kwargs):
+        raise RuntimeError("span output down")
+
+    def set_error(self, *_args, **_kwargs):
+        raise RuntimeError("span error down")
+
+    def record_retrieval(self, *_args, **_kwargs):
+        raise RuntimeError("record down")
+
+    def finish(self, *_args, **_kwargs):
+        raise RuntimeError("finish down")
+
+
+class BrokenSpanTracer:
+    def start_span(self, *_args, **_kwargs):
+        return ExplodingSpan()
+
+
+async def test_observability_failure_never_breaks_retrieval(session):
+    """span 创建或任一埋点调用异常，检索都仍返回真实结果。"""
+    await _seed_chunks(session)
+
+    no_span = await HybridRetriever(tracer=ExplodingTracer()).search(
+        session=session, tenant_id=TENANT, query="消防通道", top_k=3
+    )
+    assert no_span.results
+    assert no_span.results[0]["score"] is not None
+
+    broken_span = await HybridRetriever(tracer=BrokenSpanTracer()).search(
+        session=session, tenant_id=TENANT, query="消防通道", top_k=3
+    )
+    assert broken_span.results
+    assert broken_span.results[0]["score"] is not None

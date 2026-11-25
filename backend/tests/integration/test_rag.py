@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -403,12 +403,14 @@ async def test_seed_is_idempotent_and_searchable(session, tmp_path):
     assert first["events_total"] == 200
     assert first["seed_events"] == 200
     assert first["snapshot_paths"] == 20
+    assert first["snapshots_written"] == 20
     assert first["docs"] == 3
     assert first["chunks"] >= 3
 
     assert second["events_total"] == 200
     assert second["seed_events"] == 200
     assert second["events_created"] == 0
+    assert second["snapshots_written"] == 0
     assert second["docs"] == 3
     assert second["docs_created"] == 0
     assert second["chunks"] == first["chunks"]
@@ -417,6 +419,23 @@ async def test_seed_is_idempotent_and_searchable(session, tmp_path):
 
     snapshot_files = list((tmp_path / "snapshots" / "events").rglob("*.png"))
     assert len(snapshot_files) == 20
+
+    # 跨天重跑不按新日期新建目录；缺失文件只按库内旧路径补写。
+    third = await seed_all(
+        session, tenant_id=TENANT, storage_dir=tmp_path, now=now + timedelta(days=1)
+    )
+    assert third["events_created"] == 0
+    assert third["snapshots_written"] == 0
+    assert len(list((tmp_path / "snapshots" / "events").rglob("*.png"))) == 20
+
+    missing = snapshot_files[0]
+    missing.unlink()
+    fourth = await seed_all(
+        session, tenant_id=TENANT, storage_dir=tmp_path, now=now + timedelta(days=2)
+    )
+    assert fourth["snapshots_written"] == 1
+    assert missing.is_file()
+    assert len(list((tmp_path / "snapshots" / "events").rglob("*.png"))) == 20
 
     chunks = (
         await session.scalars(

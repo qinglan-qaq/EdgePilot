@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.knowledge import KnowledgeChunk
 from app.observability import get_tracer
 from app.observability.records import RetrievalRecord
+from app.observability.span import NullSpan
 from app.rag.embedding import (
     EmbeddingProvider,
     NullEmbeddingProvider,
@@ -39,6 +42,28 @@ CANDIDATE_LIMIT = 20
 DEFAULT_TOP_K = 8
 RRF_K = 60
 SNIPPET_LIMIT = 300
+
+logger = logging.getLogger(__name__)
+
+
+def _open_retrieval_span(tracer):
+    """观测是旁路能力：span 创建失败也返回 NullSpan，绝不打断检索。"""
+    if tracer is None:
+        return NullSpan()
+    try:
+        return tracer.start_span("retrieval.hybrid", "retrieval")
+    except Exception as exc:  # noqa: BLE001 - 观测失败不影响业务
+        logger.warning("retrieval span 创建失败，已跳过观测: %s", exc)
+        return NullSpan()
+
+
+def _obs_safe(fn, *args, **kwargs):
+    """调用观测方法并吞掉异常；业务结果绝不能因埋点失败而改变。"""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - 观测失败不影响业务
+        logger.warning("retrieval 观测写入失败，已忽略: %s", exc)
+        return None
 
 
 @dataclass
@@ -140,7 +165,11 @@ class HybridRetriever:
         self.rrf_k = rrf_k
 
     def _get_tracer(self):
-        return self._tracer or get_tracer()
+        try:
+            return self._tracer or get_tracer()
+        except Exception as exc:  # noqa: BLE001 - 观测初始化失败不影响业务
+            logger.warning("retrieval tracer 不可用，已跳过观测: %s", exc)
+            return None
 
     # ------------------------------------------------------------------ 各腿
 
@@ -164,7 +193,15 @@ class HybridRetriever:
             .limit(self.candidate_limit)
         )
         rows = (await session.execute(stmt)).all()
-        return [(int(row.id), float(row.score)) for row in rows if row.score is not None]
+        scored: list[tuple[int, float]] = []
+        for row in rows:
+            if row.score is None:
+                continue
+            value = float(row.score)
+            # 零向量等异常输入可能产生 NaN/Inf；不把非有限值当作真实分数。
+            if math.isfinite(value):
+                scored.append((int(row.id), value))
+        return scored
 
     async def _fts_leg(
         self, session: AsyncSession, tenant_id, query: str
@@ -210,8 +247,8 @@ class HybridRetriever:
             raise ValueError("top_k 必须在 1–20 之间")
 
         tracer = self._get_tracer()
-        span = tracer.start_span("retrieval.hybrid", "retrieval")
-        span.set_input({"query": query, "top_k": top_k})
+        span = _open_retrieval_span(tracer)
+        _obs_safe(span.set_input, {"query": query, "top_k": top_k})
         started = time.perf_counter()
         embedding_available = bool(getattr(self.embedder, "available", False))
         reranker_available = bool(getattr(self.reranker, "available", False))
@@ -365,14 +402,16 @@ class HybridRetriever:
                     for item in candidates
                 ],
             )
-            span.set_output(
+            _obs_safe(
+                span.set_output,
                 {
                     "total_candidates": total_candidates,
                     "result_count": len(results),
                     "empty_reason": empty_reason,
-                }
+                },
             )
-            span.record_retrieval(
+            _obs_safe(
+                span.record_retrieval,
                 RetrievalRecord(
                     query=query,
                     rewritten_query=None,
@@ -387,14 +426,15 @@ class HybridRetriever:
                     final_context=final_context,
                     duration_ms=(time.perf_counter() - started) * 1000,
                     error=None,
-                )
+                ),
             )
-            span.finish("succeeded")
+            _obs_safe(span.finish, "succeeded")
             return outcome
         except Exception as exc:
             error = {"code": "retrieval_error", "message": type(exc).__name__}
-            span.set_error("retrieval_error", str(exc), retryable=False)
-            span.record_retrieval(
+            _obs_safe(span.set_error, "retrieval_error", str(exc), retryable=False)
+            _obs_safe(
+                span.record_retrieval,
                 RetrievalRecord(
                     query=query,
                     retrieval_strategy="hybrid_rrf",
@@ -404,7 +444,7 @@ class HybridRetriever:
                     final_context=None,
                     duration_ms=(time.perf_counter() - started) * 1000,
                     error=error,
-                )
+                ),
             )
-            span.finish("failed")
+            _obs_safe(span.finish, "failed")
             raise
