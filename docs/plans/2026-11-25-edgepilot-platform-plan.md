@@ -2024,6 +2024,16 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 
 **P6 退出验收**：在界面上拖出 `start → vision(agent) → condition → approval → report(agent) → end`，发布、触发、审批、拿到 Markdown 报告；`workflow_runs.trace_id` 与报告里的证据 ID 均可点击查看。
 
+### Task 21 代码级展开（已实现）
+
+- **文件与边界**：新增 `app/workflow/{dsl,expression,validator}.py`，本 Task 不建表、不迁移、不新增依赖、不注册路由、不实现引擎/Celery/前端。
+- **DSL**：6 种节点 `start/agent/tool/condition/approval/end`；`NODE_ID_PATTERN=^[A-Za-z][A-Za-z0-9_]*$`（≤64），`input` 为保留 id，避免与 `$input` 语义冲突；`dsl_hash` 用 `json.dumps(sort_keys=True,separators=(",",":"),ensure_ascii=False)` 后 SHA-256，供发布去重。
+- **安全表达式**：不使用 `eval`；字符串感知地把 `$input` / `$<node>.output` 改写为内部根，再 `ast.parse(mode="eval")` + 白名单节点校验。只允许字段访问、`== != > >= < <=`、`and/or/not`、括号与标量字面量；拒绝函数/方法调用、下标、赋值、lambda、推导式、f-string、算术、`in/is`、容器、dunder、未知根与残留 `$`。缺失路径、非布尔 `and/or` 操作数、非布尔条件结果均抛 `ExpressionError`；编译结果缓存并暴露 `referenced_nodes`。
+- **结构校验**：报告式 `ValidationReport`（`valid/errors/warnings/node_count/edge_count/entry_node/end_nodes/topological_order`）。覆盖单 start、≥1 end、start 无入边且恰 1 出边、end 无出边、节点 id 唯一合法、每节点 `timeout_ms` 为 1..86400000 整数、type 合法、边端点存在且无自环/重复、condition 必须恰有 true/false 两条分支且非 condition 不得带 `when`、Kahn 稳定拓扑检测环、从 start 可达、可到达某个 end。
+- **语义与引用**：agent 必须有非空名称、tool 必须有非空 tool_id、condition 表达式可编译、approval 必须有 title 与合法 approvers（viewer/operator/admin）；`input_map` 仅允许标量或 `$` 表达式。表达式只能引用已存在且是当前节点**上游祖先**的节点（`$input` 不限），拒绝未知节点、自身、下游与并行分支引用，避免运行期空上下文。
+- **数据库校验**：`validate_workflow(session, tenant_id, dsl)` 先做纯结构校验，无错误时只读查询同租户 `agents.status='active'` 与 `tools.enabled=true`，缺失/禁用分别报 `agent_not_found_or_disabled` / `tool_not_found_or_disabled`；`assert_valid` 无效时抛 400 `WorkflowValidationError`，`detail.errors` 可直接返回 API。
+- **测试**：`tests/unit/workflow/test_dsl_validator.py` 123 条 + `tests/integration/test_workflow_dsl.py` 5 条。覆盖 6 节点合法图、环/不可达/无法到 end/重复 start/缺 start/缺 end/重复 id/非法 id/保留 id/未知类型/非法 timeout/自环/重复边/分支缺失或重复/非 condition 带 when、表达式合法与非法白名单、缺失路径、非布尔操作数、引用未知/下游/自身/并行分支、dsl_hash 键序稳定。新增 128 条，全量 **352 passed**；未新增迁移，无需 `alembic check`。
+
 ---
 
 ## P7 分析、部署与可靠性（契约级）
