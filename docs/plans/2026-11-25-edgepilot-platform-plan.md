@@ -2034,6 +2034,19 @@ git commit -m "feat(agents): 单 Agent 试跑与 agent_run 落库"
 - **数据库校验**：`validate_workflow(session, tenant_id, dsl)` 先做纯结构校验，无错误时只读查询同租户 `agents.status='active'` 与 `tools.enabled=true`，缺失/禁用分别报 `agent_not_found_or_disabled` / `tool_not_found_or_disabled`；`assert_valid` 无效时抛 400 `WorkflowValidationError`，`detail.errors` 可直接返回 API。
 - **测试**：`tests/unit/workflow/test_dsl_validator.py` 123 条 + `tests/integration/test_workflow_dsl.py` 5 条。覆盖 6 节点合法图、环/不可达/无法到 end/重复 start/缺 start/缺 end/重复 id/非法 id/保留 id/未知类型/非法 timeout/自环/重复边/分支缺失或重复/非 condition 带 when、表达式合法与非法白名单、缺失路径、非布尔操作数、引用未知/下游/自身/并行分支、dsl_hash 键序稳定。新增 128 条，全量 **352 passed**；未新增迁移，无需 `alembic check`。
 
+### Task 22A 代码级展开（已实现）
+
+- **拆分原因**：原 Task 22 同时覆盖引擎与 Celery，但持久化/草稿/发布/运行记录 API 是没有归属的前置项。拆为 22A（本段，已实现）与 22B（引擎 + 审批 + Celery，待做）；22A 不实现执行逻辑。
+- **文件**：`app/schemas/workflow.py`、`app/repositories/workflow_repo.py`、`app/services/{workflow_service,run_service}.py`、`app/api/v1/{workflows,runs}.py`、`app/api/v1/router.py`；复用既有 `workflow_versions`/`workflow_runs`/`workflow_node_runs` 表，**不新增迁移**。
+- **草稿约定**：草稿存为 `workflow_versions.version = 0`（每工作流一条，可改）；`version >= 1` 为不可变发布快照。创建即建空草稿；PATCH 只改元数据与草稿；详情优先返回草稿；`/versions` 只列发布版本。
+- **发布**：`SELECT ... FOR UPDATE` 锁工作流行 → 校验草稿 → 已发布最大版本 +1 → 深拷贝插入快照 → 更新 `current_version/status` → 单次 commit → 审计 `workflow.publish`。校验失败抛 400 `WorkflowValidationError`，`detail.errors` 原样进响应 `data`；失败路径不 commit，由请求会话关闭回滚（**不要**在 service 内 `rollback()`，测试使用外层共享事务）。
+- **端点与权限**：`GET/POST /workflows`、`GET/PATCH /workflows/{id}`、`POST /workflows/{id}/validate`、`POST /workflows/{id}/publish`、`GET /workflows/{id}/versions`、`POST /workflows/{id}/runs`；`GET /runs`、`GET /runs/{id}`、`GET /runs/{id}/logs`、`POST /runs/{id}/cancel`。viewer 只读；operator/admin 可写与触发；发布仅 admin；跨租户统一 404。校验端点非法也返回 200 + `valid=false`。
+- **运行创建**：要求已发布且 `current_version >= 1`；同一事务插入 `pending` run（`trace_id=None`，不伪造、不入队）与按 DSL 声明顺序预插的全部 `workflow_node_runs`（`attempt=1`）；审计 `workflow.run`。
+- **取消状态机**：仅 `pending/running/waiting_approval` 可取消；run → `cancelled` + `finished_at`，非终态节点 → `skipped`；重复取消 409；审计 `workflow.cancel`（记录 `from_status`）。引擎推进前必须重读 run 状态，避免取消后继续写节点。
+- **响应字段**：`WorkflowRunOut` 带 `workflow_version`（版本号）与 `root_span_id`；`WorkflowNodeRunOut` 带 `span_id`/`heartbeat_at`，供 Task 25 做 trace 跳转与卡死识别。列表 `last_run` 用窗口函数一次取回，避免 N+1。
+- **依赖变更**：`app/main.py` 的 `AppError` 响应包由固定 `"data": None` 改为 `"data": exc.detail`，使发布校验明细可见；既有响应包测试仍通过，detail 均为校验/元数据，不含密钥。
+- **测试**：`tests/integration/test_workflows_api.py` 13 条，覆盖 CRUD/草稿、权限矩阵、跨租户 404、校验报告关键错误、发布不可变版本、非法草稿 400 后状态不变、运行预插与不执行、列表过滤、取消状态机、审计与不存在资源。新增 13 条，全量 **365 passed**；无迁移，`alembic check` 无需运行。
+
 ---
 
 ## P7 分析、部署与可靠性（契约级）
