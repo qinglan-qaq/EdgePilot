@@ -22,6 +22,12 @@ import RunDetail from '@/views/RunDetail.vue'
 import Runs from '@/views/Runs.vue'
 import WorkflowEditor from '@/views/WorkflowEditor.vue'
 import Workflows from '@/views/Workflows.vue'
+import VisionDetect from '@/views/vision/Detect.vue'
+import VisionModels from '@/views/vision/Models.vue'
+import VisionOverview from '@/views/vision/Overview.vue'
+import VisionRecords from '@/views/vision/Records.vue'
+import VisionTaskDetail from '@/views/vision/TaskDetail.vue'
+import VisionLayout from '@/views/vision/VisionLayout.vue'
 
 import { canAccessRoles } from './access'
 import { sanitizeRedirect } from './redirect'
@@ -284,6 +290,74 @@ const routes: RouteRecordRaw[] = [
               nav: true,
               roles: ['admin'],
               activeMenu: '/observability/settings',
+            },
+          },
+        ],
+      },
+      {
+        path: 'vision',
+        name: 'vision',
+        component: VisionLayout,
+        meta: {
+          title: '视频识别',
+          nav: true,
+          icon: 'vision',
+          roles: ALL_ROLES,
+        },
+        children: [
+          {
+            path: '',
+            name: 'vision-overview',
+            component: VisionOverview,
+            meta: {
+              title: '识别概览',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/vision',
+            },
+          },
+          {
+            path: 'detect',
+            name: 'vision-detect',
+            component: VisionDetect,
+            meta: {
+              title: '视频识别',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/vision/detect',
+            },
+          },
+          {
+            path: 'records',
+            name: 'vision-records',
+            component: VisionRecords,
+            meta: {
+              title: '识别记录',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/vision/records',
+            },
+          },
+          {
+            path: 'records/:taskUid',
+            name: 'vision-task-detail',
+            component: VisionTaskDetail,
+            meta: {
+              title: '识别详情',
+              nav: false,
+              roles: ALL_ROLES,
+              activeMenu: '/vision/records',
+            },
+          },
+          {
+            path: 'models',
+            name: 'vision-models',
+            component: VisionModels,
+            meta: {
+              title: '模型与许可',
+              nav: true,
+              roles: ALL_ROLES,
+              activeMenu: '/vision/models',
             },
           },
         ],

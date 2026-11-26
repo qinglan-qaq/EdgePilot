@@ -13,6 +13,7 @@ import {
   Setting,
   Share,
   VideoPlay,
+  View,
 } from '@element-plus/icons-vue'
 
 import type { UserRole } from '@/api/http'
@@ -43,6 +44,7 @@ const iconMap: Record<string, Component> = {
   workflows: Share,
   runs: VideoPlay,
   observability: DataLine,
+  vision: View,
   nodes: Connection,
   devices: Camera,
   events: Bell,
