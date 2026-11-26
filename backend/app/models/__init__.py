@@ -1,4 +1,4 @@
-"""SQLAlchemy 模型。导入本包即注册全部 16 张表到 Base.metadata。"""
+"""SQLAlchemy 模型。导入本包即注册全部业务表到 Base.metadata。"""
 
 from app.models.agent import Agent, AgentToolBinding, AgentVersion
 from app.models.audit import AuditLog
@@ -10,6 +10,7 @@ from app.models.model_config import ModelConfig
 from app.models.run import AgentRun, WorkflowNodeRun, WorkflowRun
 from app.models.tool import Tool
 from app.models.user import User
+from app.models.vision import VisionModel, VisionResult, VisionTask
 from app.models.workflow import Workflow, WorkflowVersion
 
 __all__ = [
@@ -32,4 +33,7 @@ __all__ = [
     "VisionEvent",
     "KnowledgeChunk",
     "AuditLog",
+    "VisionTask",
+    "VisionResult",
+    "VisionModel",
 ]

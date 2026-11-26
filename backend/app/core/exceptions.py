@@ -39,3 +39,11 @@ class RateLimited(AppError):
 
 class ServiceUnavailable(AppError):
     code = http_status = 503
+
+
+class PayloadTooLarge(AppError):
+    code = http_status = 413
+
+
+class InsufficientStorage(AppError):
+    code = http_status = 507

@@ -5,6 +5,7 @@ EXPECTED_TABLES = {
     "users", "agents", "agent_versions", "model_configs", "tools", "agent_tool_bindings",
     "workflows", "workflow_versions", "workflow_runs", "workflow_node_runs",
     "edge_nodes", "devices", "vision_events", "agent_runs", "knowledge_chunks", "audit_logs",
+    "vision_tasks", "vision_results", "vision_models",
 }
 EXPECTED_COLUMNS = {
     "workflow_runs": {"root_span_id"},
@@ -21,7 +22,8 @@ REMOVED_COLUMNS = {
 TENANT_TABLES = {"users", "agents", "agent_versions", "model_configs", "tools",
                  "agent_tool_bindings", "workflows", "workflow_versions", "workflow_runs",
                  "workflow_node_runs", "edge_nodes", "devices", "vision_events",
-                 "agent_runs", "knowledge_chunks", "audit_logs"}
+                 "agent_runs", "knowledge_chunks", "audit_logs",
+                 "vision_tasks", "vision_results", "vision_models"}
 
 
 @pytest.mark.asyncio

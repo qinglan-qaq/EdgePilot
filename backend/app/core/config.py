@@ -54,6 +54,43 @@ class Settings(BaseSettings):
     snapshot_ttl_days: int = 90
     metrics_enabled: bool = True
 
+    # ---------------------------------------------------------------- Vision Center
+    # 推理服务不可用不影响既有模块；关闭后 vision 路由 503、轮询器不启动。
+    vision_enabled: bool = True
+    vision_service_url: str = "http://127.0.0.1:8001"
+    vision_service_token: str = ""
+    vision_service_timeout_s: float = 5.0
+    vision_poll_interval_s: float = 2.0
+    vision_poll_max_failures: int = 30
+    vision_poll_backoff_max_s: int = 30
+    vision_task_timeout_s: int = 1800
+    vision_storage_dir: str = ""
+    vision_max_upload_mb: int = 200
+    vision_max_video_seconds: int = 900
+    vision_target_frames: int = 900
+    vision_max_samples: int = 2000
+    vision_max_frame_stride: int = 300
+    vision_default_conf: float = 0.25
+    vision_event_conf: float = 0.6
+    vision_event_cooldown_s: int = 5
+    vision_trigger_enabled: bool = True
+    vision_trigger_workflow_name: str = "视觉事件研判（演示）"
+    vision_trigger_once_per_task: bool = True
+    vision_agent_enabled: bool = True
+    vision_agent_once_per_task: bool = True
+    vision_max_retries: int = 3
+    vision_result_retention_days: int = 90
+    vision_model_key: str = "yolo11n"
+    vision_media_ttl_s: int = 3600
+
+    @property
+    def vision_storage_root(self):
+        from pathlib import Path
+
+        if self.vision_storage_dir:
+            return Path(self.vision_storage_dir)
+        return Path(self.storage_dir) / "vision"
+
 
 @lru_cache
 def get_settings() -> Settings:
