@@ -93,11 +93,22 @@ class VisionAgentService:
 
     # ----------------------------------------------------------------- helpers
     def _llm(self, agent: Agent) -> LLMClient:
-        """LLM 客户端 seam：测试 monkeypatch 本方法注入替身，默认按配置构造。"""
+        """LLM 客户端 seam：测试 monkeypatch 本方法注入替身，默认按配置构造。
+
+        Agent 的 ``config["mock_fixture"]`` 是 mock 模式的显式 fixture 名，
+        与 supervisor / workflow / agents 路由保持一致。仅在未配置合法
+        ``mock_fixture`` 时，才由 LLMClient 回落到 prompt-hash 文件名；
+        该回落只适用于调用方本就未指定 fixture 的场景。
+        """
         settings = get_settings()
+        config = getattr(agent, "config", None)
+        fixture_name = config.get("mock_fixture") if isinstance(config, dict) else None
+        if not (isinstance(fixture_name, str) and fixture_name.strip()):
+            fixture_name = None
         return LLMClient(
             mode=settings.llm_mode,
             fixture_dir=settings.llm_fixture_dir,
+            fixture_name=fixture_name,
         )
 
     @staticmethod

@@ -35,6 +35,14 @@ VISION_AGENT = "demo-vision"
 REPORT_AGENT = "demo-report"
 WORKFLOW_NAME = "园区周界巡检（演示）"
 WORKFLOW_DESCRIPTION = "P6 退出验收：视觉分析 → 条件 → 人工审批 → 报告 → trace"
+# 必须与后端配置 ``settings.vision_trigger_workflow_name`` 一致：
+# VisionTriggerService 按名称精确查找已发布工作流，找不到就跳过联动。
+VISION_TRIGGER_WORKFLOW_NAME = os.environ.get(
+    "VISION_TRIGGER_WORKFLOW_NAME", "视觉事件研判（演示）"
+)
+VISION_TRIGGER_WORKFLOW_DESCRIPTION = (
+    "视觉任务完成后自动触发的演示工作流（起步节点直达结束）"
+)
 
 TERMINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "timeout", "cancelled"})
 
@@ -230,6 +238,29 @@ def _workflow_dsl() -> dict:
     }
 
 
+def _trigger_workflow_dsl() -> dict:
+    """最小触发工作流：start → end，无 Agent/审批节点，保证每次都能成功结束。"""
+    return {
+        "nodes": [
+            {
+                "id": "start",
+                "type": "start",
+                "title": "接收视觉任务",
+                "timeout_ms": 60000,
+                "position": {"x": 40, "y": 160},
+            },
+            {
+                "id": "end",
+                "type": "end",
+                "title": "研判完成",
+                "timeout_ms": 60000,
+                "position": {"x": 280, "y": 160},
+            },
+        ],
+        "edges": [{"from": "start", "to": "end"}],
+    }
+
+
 # --------------------------------------------------------------- 数据准备
 
 
@@ -272,29 +303,31 @@ async def _ensure_agent(
     return updated, True
 
 
-async def _ensure_workflow(admin: Api) -> tuple[dict, bool]:
-    dsl = _workflow_dsl()
-    existing = await _find_by_name(admin, "/workflows", WORKFLOW_NAME)
+async def _ensure_workflow(
+    admin: Api, name: str, description: str, dsl: dict
+) -> tuple[dict, bool]:
+    created = False
+    existing = await _find_by_name(admin, "/workflows", name)
     if existing is None:
-        created = await admin.request(
+        detail = await admin.request(
             "POST",
             "/workflows",
             json={
-                "name": WORKFLOW_NAME,
-                "description": WORKFLOW_DESCRIPTION,
+                "name": name,
+                "description": description,
                 "dsl": dsl,
             },
         )
-        return created, True
-
-    # 列表项不含 dsl，必须取详情再比对，否则每次都会误判草稿已变更并重发布。
-    detail = await admin.request("GET", f"/workflows/{existing['id']}")
-    if detail.get("dsl") != dsl:
-        detail = await admin.request(
-            "PATCH",
-            f"/workflows/{existing['id']}",
-            json={"description": WORKFLOW_DESCRIPTION, "dsl": dsl},
-        )
+        created = True
+    else:
+        # 列表项不含 dsl，必须取详情再比对，否则每次都会误判草稿已变更并重发布。
+        detail = await admin.request("GET", f"/workflows/{existing['id']}")
+        if detail.get("dsl") != dsl:
+            detail = await admin.request(
+                "PATCH",
+                f"/workflows/{detail['id']}",
+                json={"description": description, "dsl": dsl},
+            )
     versions = await admin.request(
         "GET", f"/workflows/{detail['id']}/versions"
     )
@@ -302,7 +335,7 @@ async def _ensure_workflow(admin: Api) -> tuple[dict, bool]:
     if latest is None or latest.get("dsl") != dsl:
         await admin.request("POST", f"/workflows/{detail['id']}/publish")
         return detail, True
-    return detail, False
+    return detail, created
 
 
 # --------------------------------------------------------------- 运行验收
@@ -422,6 +455,12 @@ async def _main(args: argparse.Namespace) -> dict:
     if len(password) < 8:
         raise DemoError("请通过 SEED_PASSWORD 提供至少 8 位演示账号密码")
 
+    if "VISION_TRIGGER_WORKFLOW_NAME" in os.environ:
+        print(
+            "警告：VISION_TRIGGER_WORKFLOW_NAME 仅作用于本脚本，API 进程"
+            "（backend/.env 或容器环境）必须配置同一值，否则视觉联动会被静默跳过。"
+        )
+
     async with httpx.AsyncClient(base_url=args.base_url, timeout=30.0) as client:
         anonymous = Api(client)
         admin = anonymous.with_token(
@@ -468,15 +507,34 @@ async def _main(args: argparse.Namespace) -> dict:
                 await admin.request("POST", f"/agents/{agent['id']}/publish")
                 print(f"Agent {label} 已发布：{agent['name']}#{agent['id']}")
 
-        workflow, published = await _ensure_workflow(admin)
+        workflow, published = await _ensure_workflow(
+            admin, WORKFLOW_NAME, WORKFLOW_DESCRIPTION, _workflow_dsl()
+        )
         workflow_id = int(workflow["id"])
         print(
             f"工作流已就绪：{workflow['name']}#{workflow_id}"
             f"（{'已发布新版本' if published else '复用当前版本'}）"
         )
 
+        trigger, trigger_published = await _ensure_workflow(
+            admin,
+            VISION_TRIGGER_WORKFLOW_NAME,
+            VISION_TRIGGER_WORKFLOW_DESCRIPTION,
+            _trigger_workflow_dsl(),
+        )
+        trigger_id = int(trigger["id"])
+        print(
+            f"视觉联动工作流已就绪：{trigger['name']}#{trigger_id}"
+            f"（{'已发布/已更新' if trigger_published else '复用当前版本'}）"
+        )
+
         result: dict[str, Any] = {
             "workflow_id": workflow_id,
+            "vision_trigger_workflow": {
+                "name": trigger["name"],
+                "id": trigger_id,
+                "published": trigger_published,
+            },
             "vision_agent_id": vision["id"],
             "report_agent_id": report["id"],
             "event": event_meta,

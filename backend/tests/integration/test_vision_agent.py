@@ -657,3 +657,30 @@ async def test_agent_test_route_remains_admin_only(
         )
         assert r.status_code == 403
         assert r.json()["code"] == 403
+
+
+def test_llm_uses_agent_mock_fixture(vision_service_cls):
+    """断言 ``config["mock_fixture"]`` 被透传进 ``LLMClient.fixture_name``。
+
+    覆盖合法值原样透传，以及缺失/非法配置回落 ``None`` 的矩阵；
+    优先级（显式 fixture 优先于 prompt hash）由
+    ``tests/unit/agents/test_llm_client.py`` 覆盖。纯构造断言，不触 DB/网络。
+    """
+    from types import SimpleNamespace
+
+    service = vision_service_cls(None)
+
+    # 合法配置：原样透传，不能落回 prompt-hash 文件名。
+    client = service._llm(SimpleNamespace(config={"mock_fixture": "demo_vision"}))
+    assert client.fixture_name == "demo_vision"
+
+    # 缺失 / 空 dict / config 属性不存在 / 非字符串 / 空白字符串：均为 None。
+    for agent in (
+        SimpleNamespace(config={}),
+        SimpleNamespace(config=None),
+        SimpleNamespace(),
+        SimpleNamespace(config={"mock_fixture": 123}),
+        SimpleNamespace(config={"mock_fixture": ""}),
+        SimpleNamespace(config={"mock_fixture": "   "}),
+    ):
+        assert service._llm(agent).fixture_name is None
