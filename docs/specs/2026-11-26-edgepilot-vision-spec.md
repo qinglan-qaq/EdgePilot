@@ -654,10 +654,12 @@ CREATE TABLE vision_models (
 | 403 | `forbidden` | 角色不足；签名无效或过期 |
 | 404 | `task_not_found` / `event_not_found` / `artifact_missing` | 不存在或跨租户 |
 | 409 | `task_not_retryable` | 状态不允许重试 |
+| 409 | `retry_limit_exceeded` | 重新派发次数达到 `VISION_MAX_RETRIES` |
 | 409 | `no_vision_events` | 任务无事件可研判 |
 | 409 | `vision_agent_missing` | 无可用 Vision Agent |
 | 413 | `file_too_large` | 超过 `VISION_MAX_UPLOAD_MB` |
-| 422 | — | Pydantic 校验（沿用全局 handler） |
+| 422 | `video_too_long` | 时长超过 `VISION_MAX_VIDEO_SECONDS`（probe 阶段直接拒绝，不落任务） |
+| 422 | — | 其它 Pydantic 校验（沿用全局 handler） |
 | 429 | `vision_queue_full` | 推理队列满 |
 | 503 | `vision_disabled` | `VISION_ENABLED=false` |
 | 503 | `artifact_corrupted` | artifact 哈希不符 |
