@@ -152,7 +152,15 @@ export const useObservabilityStore = defineStore('observability', () => {
     }
   }
 
-  /** 按 URL 解析出的参数加载 Trace 列表；失败时清空旧数据，避免展示过期结果。 */
+  /**
+   * 按 URL 解析出的参数加载 Trace 列表。
+   *
+   * 关键节点：
+   * 1. 每个域各自维护单调令牌，只有最新请求可以写回状态；
+   * 2. 失败时清空旧列表与总数，避免把上一个筛选条件的结果留在页面上。
+   *
+   * @param params 筛选、分页与时间窗口参数。
+   */
   async function loadTraces(params: ListTracesParams = {}): Promise<void> {
     const token = ++tracesToken
     tracesLoading.value = true
@@ -181,7 +189,13 @@ export const useObservabilityStore = defineStore('observability', () => {
 
   /**
    * 并行加载 Trace 概要、Span 树、扁平 Span 与事件。
-   * 任一请求失败都视为整页失败：清空旧数据，避免混入上一次 Trace 的结果。
+   *
+   * 关键节点：
+   * 1. 四个请求并发发出，任一失败整页失败，避免混入上一次 Trace 的数据；
+   * 2. 加载新 Trace 时让旧的 Span 详情请求失效，并重置选中态；
+   * 3. 只有最新一次加载可以写回状态。
+   *
+   * @param traceId 目标 Trace 的 32 位 ID。
    */
   async function loadTraceDetail(traceId: string): Promise<void> {
     const token = ++traceDetailToken
@@ -224,7 +238,13 @@ export const useObservabilityStore = defineStore('observability', () => {
     }
   }
 
-  /** 选中 Span 并懒加载详情；快速切换时旧响应不会覆盖新选择。 */
+  /**
+   * 选中 Span 并懒加载详情。
+   *
+   * 关键节点：除令牌外还比对 selectedSpanId，快速切换时旧响应不会覆盖新选择。
+   *
+   * @param spanId 目标 Span 的 16 位 ID。
+   */
   async function selectTraceSpan(spanId: string): Promise<void> {
     const token = ++spanDetailToken
     selectedSpanId.value = spanId

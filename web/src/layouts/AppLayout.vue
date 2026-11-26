@@ -107,6 +107,12 @@ const displayName = computed(
 const roleLabel = computed(() => (auth.role ? roleLabels[auth.role] : '未知角色'))
 const roleTagType = computed(() => (auth.role ? roleTagTypes[auth.role] : 'info'))
 
+/**
+ * 退出登录：清本地状态后回到登录页。
+ *
+ * 关键节点：`auth.logout()` 内部已保证后端失败也清理本地令牌；
+ * loggingOut 防止重复点击触发多次跳转。
+ */
 async function handleLogout(): Promise<void> {
   if (loggingOut.value) {
     return

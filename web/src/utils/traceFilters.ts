@@ -113,6 +113,16 @@ function integerNumber(value: string): number | undefined {
 /**
  * 构造列表请求参数：空值与非法数字不发送，布尔值是真实 boolean。
  * page / size 始终发送，后端据此分页。
+ *
+ * 关键节点：
+ * 1. 只有用户确实填写的字段才进入请求，避免空串被后端当成筛选条件；
+ * 2. 数字字段先做有限值校验，NaN / Infinity 不会发给后端；
+ * 3. failed / slow 只有为 true 才发送，默认查询不受影响。
+ *
+ * @param filters 页面上的筛选状态。
+ * @param page 页码，从 1 开始。
+ * @param size 每页条数。
+ * @returns 可直接传给 Trace 列表 API 的参数。
  */
 export function buildTraceListParams(
   filters: TraceFilterState,
@@ -171,7 +181,16 @@ export function buildTraceListParams(
   return params
 }
 
-/** 构造路由 query：省略空字段与 page=1；布尔写成 failed=1 / slow=1。 */
+/**
+ * 构造路由 query：省略空字段与 page=1；布尔写成 failed=1 / slow=1。
+ *
+ * 关键节点：URL 即筛选事实源，因此这里必须与 `parseTraceFilters`
+ * 保持可逆：写入什么，刷新后就能还原成同样的筛选状态。
+ *
+ * @param filters 页面上的筛选状态。
+ * @param page 当前页码。
+ * @returns 可直接写进 router 的字符串 query。
+ */
 export function buildTraceRouteQuery(
   filters: TraceFilterState,
   page: number,

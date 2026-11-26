@@ -168,6 +168,17 @@ function withBearer(config: RetriableConfig, accessToken: string): RetriableConf
   return config
 }
 
+/**
+ * 解开后端统一信封，直接把 data 交给页面层。
+ *
+ * 关键节点：
+ * 1. `code === 0` 才视为成功，其余情况抛 ApiError（保留 trace_id 供排障）；
+ * 2. 非信封响应（例如网关直出）按原样返回，保证兼容性。
+ *
+ * @param response axios 原始响应。
+ * @returns 信封中的 data，或非信封响应的原始 payload。
+ * @throws {ApiError} 信封 code 非 0 时抛出，携带业务码与后端 message。
+ */
 function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
   const payload = response.data
   if (isEnvelope(payload)) {
@@ -183,6 +194,14 @@ function unwrapResponse<T>(response: AxiosResponse<unknown>): T {
 
 /**
  * 创建可注入依赖的 HTTP 客户端，便于单测替换刷新逻辑与适配器。
+ *
+ * 关键节点：
+ * 1. 请求拦截器统一补 Bearer 令牌；
+ * 2. 响应拦截器解包统一信封，并把 401 交给单飞刷新逻辑；
+ * 3. 多个并发 401 共享同一个 refreshPromise，避免刷新风暴。
+ *
+ * @param deps 令牌读取、刷新、失效回调与基础配置。
+ * @returns 原始 axios 实例与解包后的快捷方法。
  */
 export function createHttpClient(deps: HttpClientDeps): HttpClient {
   const http = axios.create({
@@ -193,6 +212,18 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   // 多个并发 401 共享同一次刷新，避免刷新风暴
   let refreshPromise: Promise<string> | null = null
 
+  /**
+   * 用 refresh_token 换新令牌；并发的 401 共用同一次刷新。
+   *
+   * 关键节点：
+   * 1. refreshPromise 作为单飞锁，成功后写入新令牌并返回 access_token；
+   * 2. 刷新失败立即清空本地登录态（onUnauthorized），页面据此跳登录；
+   * 3. finally 释放锁，保证下一次失效时可以重新刷新。
+   *
+   * @param refreshToken 本地保存的刷新令牌。
+   * @returns 新 access_token，供原请求重放使用。
+   * @throws {ApiError} 刷新失败时抛出 401，并已触发本地登出。
+   */
   function ensureRefreshed(refreshToken: string): Promise<string> {
     if (!refreshPromise) {
       refreshPromise = deps
@@ -238,6 +269,8 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
         return Promise.reject(apiError)
       }
 
+      // 关键节点 1：只有 401 且尚未重放过才进入刷新分支，
+      // 避免刷新失败后无限重试同一条请求。
       const status = error.response?.status
       const config = error.config as RetriableConfig | undefined
       if (status !== 401 || !config || config._retry) {
@@ -251,7 +284,8 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
 
       config._retry = true
 
-      // 若刷新已由别的并发请求完成，直接用新令牌重放，避免再次刷新
+      // 关键节点 2：若刷新已由别的并发请求完成，直接用新令牌重放，
+      // 不再触发第二次刷新。
       const currentToken = deps.getAccessToken()
       if (currentToken && currentToken !== bearerTokenOf(config)) {
         return http.request(withBearer(config, currentToken)) as unknown as AxiosResponse
@@ -267,7 +301,8 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
 
       const accessToken = await ensureRefreshed(refreshToken)
 
-      // 重放原请求；_retry 已置位，若再次 401 会直接失败，不会二次刷新
+      // 关键节点 3：重放原请求；_retry 已置位，若再次 401 会直接失败，
+      // 不会二次刷新。
       return http.request(withBearer(config, accessToken)) as unknown as AxiosResponse
     },
   )
@@ -290,7 +325,17 @@ export function createHttpClient(deps: HttpClientDeps): HttpClient {
   return { http, api }
 }
 
-/** 直接使用 axios 调刷新接口，避免默认客户端拦截器造成递归刷新。 */
+/**
+ * 直接使用 axios 调刷新接口，避免默认客户端拦截器造成递归刷新。
+ *
+ * 关键节点：
+ * 1. 不走带拦截器的默认实例，防止刷新请求自身 401 时再次递归刷新；
+ * 2. 响应必须符合统一信封且 code === 0，否则视为刷新失败。
+ *
+ * @param refreshToken 本地保存的刷新令牌。
+ * @returns 新的令牌对。
+ * @throws {ApiError} 响应格式不正确或业务码非 0 时抛出。
+ */
 async function refreshWithBackend(refreshToken: string): Promise<TokenPair> {
   const response = await axios.post<unknown>(
     `${DEFAULT_BASE_URL}/auth/refresh`,

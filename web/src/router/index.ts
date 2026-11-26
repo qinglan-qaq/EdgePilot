@@ -325,6 +325,15 @@ const router = createRouter({
   routes,
 })
 
+/**
+ * 全局路由守卫：恢复登录态 → 公共路由放行 → 未登录跳登录 → 角色校验。
+ *
+ * 关键节点：
+ * 1. 每次导航先等待 `auth.bootstrap()`；内部共享 Promise，只真正执行一次；
+ * 2. 已登录用户访问 /login 直接回首页，避免重复登录；
+ * 3. 未登录时把原始路径放进 redirect，登录后可回到用户想去的页面；
+ * 4. 角色不足统一跳 /403，不向后端发无权限请求。
+ */
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
 

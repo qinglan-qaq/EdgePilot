@@ -19,6 +19,15 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => Boolean(accessToken.value))
   const role = computed<UserRole | null>(() => user.value?.role ?? null)
 
+  /**
+   * 拉取当前账号信息并同步最新令牌。
+   *
+   * 关键节点：401 可能已被 HTTP 拦截器静默刷新，因此请求结束后
+   * 重新从 localStorage 读一次 access_token。
+   *
+   * @returns 当前用户信息。
+   * @throws {ApiError} 未登录或后端拒绝时抛出，由调用方决定跳转。
+   */
   async function fetchMe(): Promise<AuthUser | null> {
     loading.value = true
     try {
@@ -32,6 +41,18 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 登录：换令牌 → 拉 /auth/me → 标记初始化完成。
+   *
+   * 关键节点：
+   * 1. 令牌先落 localStorage，fetchMe 才能带上 Authorization；
+   * 2. 令牌已拿到但 /auth/me 失败时回滚本地登录态，不保留半截会话。
+   *
+   * @param email 登录邮箱。
+   * @param password 登录密码。
+   * @returns 登录成功的用户信息。
+   * @throws {ApiError} 凭证错误或账号信息拉取失败时抛出。
+   */
   async function login(email: string, password: string): Promise<AuthUser> {
     loading.value = true
     let receivedPair = false
@@ -60,6 +81,16 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 应用启动时恢复登录态；多次调用共享同一个进行中的 Promise。
+   *
+   * 关键节点：
+   * 1. 有令牌才请求 /auth/me，无令牌直接清空内存用户；
+   * 2. 任何失败都视为未登录并清理令牌，不阻塞路由渲染；
+   * 3. initialized 只在流程结束时置位，路由守卫据此等待。
+   *
+   * @returns 恢复流程完成后 resolve。
+   */
   async function bootstrap(): Promise<void> {
     if (initialized.value) {
       return
@@ -92,6 +123,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 退出登录：尽力通知后端，无条件清理本地登录态。
+   *
+   * 关键节点：后端登出失败不能阻断本地退出，否则用户会被困在错误状态。
+   */
   async function logout(): Promise<void> {
     loading.value = true
     try {
