@@ -110,18 +110,32 @@ class MqttClient:
         )
         self._client.subscribe(cmd_filter(self.config.node_key), qos=1)
 
-        result = self.outbox.flush(self._publish_pending)
-        if result.error:
-            logger.warning(
-                "outbox 补发中断 sent=%d remaining=%d error=%s",
-                result.sent,
-                result.remaining,
-                result.error,
-            )
-        elif result.sent or result.remaining:
-            logger.info(
-                "outbox 补发完成 sent=%d remaining=%d", result.sent, result.remaining
-            )
+        # flush 按批发送（默认 100 条/批）；断网较久时待发量可能远超一批，
+        # 必须循环到排空，否则一次重连只补 100 条，剩余消息要等下次重连。
+        total_sent = 0
+        while True:
+            result = self.outbox.flush(self._publish_pending)
+            total_sent += result.sent
+            if result.error:
+                logger.warning(
+                    "outbox 补发中断 sent=%d remaining=%d error=%s",
+                    total_sent,
+                    result.remaining,
+                    result.error,
+                )
+                break
+            if result.remaining == 0:
+                if total_sent:
+                    logger.info("outbox 补发完成 sent=%d remaining=0", total_sent)
+                break
+            if result.sent == 0:
+                # 待发非空却一条都发不出去：避免在 on_connect 回调里死循环。
+                logger.warning(
+                    "outbox 补发无进展 sent=%d remaining=%d",
+                    total_sent,
+                    result.remaining,
+                )
+                break
 
     def _on_disconnect(self, client, userdata, flags=None, reason_code=None, properties=None) -> None:
         self._connected = False

@@ -249,6 +249,26 @@ def test_offline_publish_enqueues_and_reconnect_flushes_in_seq_order(tmp_path):
     assert outbox.count() == 0
 
 
+def test_reconnect_drains_backlog_larger_than_one_flush_batch(tmp_path):
+    """断网积压超过单批 100 条时，一次重连也要全部补发。"""
+    fake, outbox, client = _client(tmp_path)
+
+    expected = [f"bulk-{i}" for i in range(250)]
+    for msg_id in expected:
+        assert client.publish(event_topic("node-1"), {"msg_id": msg_id}, qos=1) is False
+    assert outbox.count() == len(expected)
+
+    fake.on_connect(fake, None, {}, 0, None)
+
+    replayed = [
+        json.loads(p["payload"])["msg_id"]
+        for p in fake.published
+        if p["topic"] == event_topic("node-1")
+    ]
+    assert replayed == expected
+    assert outbox.count() == 0
+
+
 # ---------------------------------------------------------------------------
 # 4. 心跳：必需字段、5s 默认、QoS 0、离线不落 outbox
 # ---------------------------------------------------------------------------
