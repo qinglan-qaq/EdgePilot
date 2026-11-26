@@ -264,6 +264,24 @@ async def test_upload_enforces_200mb_limit_without_persisting_task(
     assert list(vision_root.rglob(".tmp-*")) == [], "超限后必须删除临时文件"
 
 
+async def test_upload_rejects_params_above_configured_caps(
+    client, session, admin_token, fake_vision, vision_root
+):
+    settings = get_settings()
+    cases = [
+        {"frame_stride": settings.vision_max_frame_stride + 1},
+        {"target_samples": settings.vision_max_samples + 1},
+    ]
+    for form in cases:
+        response = await _upload(client, admin_token, _valid_mp4(), **form)
+        assert response.status_code == 422, (form, response.text)
+        assert response.json()["data"]["reason"] == "invalid_parameter"
+
+    assert await _task_count(session) == 0
+    assert fake_vision.probe_calls == []
+    assert list(vision_root.rglob(".tmp-*")) == []
+
+
 async def test_upload_rejects_bad_magic_unsupported_suffix_and_empty_file(
     client, session, admin_token, fake_vision, vision_root
 ):
@@ -665,6 +683,21 @@ async def test_probe_video_too_long_rejected_with_422(
     data = _valid_mp4()
 
     response = await _upload(client, admin_token, data)
+    assert response.status_code == 422, response.text
+    assert response.json()["data"]["reason"] == "video_too_long"
+    assert await _task_count(session) == 0
+    assert fake_vision.job_calls == []
+    assert list(vision_root.rglob(".tmp-*")) == [], "拒绝后必须删除临时文件"
+
+
+async def test_backend_duration_cap_rejects_when_probe_succeeds(
+    client, session, admin_token, fake_vision, vision_root
+):
+    """推理服务 probe 正常返回但超时长：后端仍按 VISION_MAX_VIDEO_SECONDS 拒绝。"""
+    fake_vision.probe_data = _probe_payload(frame_count=25_000, fps=25.0)
+
+    response = await _upload(client, admin_token, _valid_mp4())
+
     assert response.status_code == 422, response.text
     assert response.json()["data"]["reason"] == "video_too_long"
     assert await _task_count(session) == 0

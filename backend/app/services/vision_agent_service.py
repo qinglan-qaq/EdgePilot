@@ -155,7 +155,16 @@ class VisionAgentService:
         event_loader,
     ) -> dict:
         """共用主流程：复用 → running 检查 → 事件/Agent 校验 → 单次运行。"""
-        if result.agent_status == AGENT_STATUS_SUCCEEDED and result.agent_run_id:
+        settings = get_settings()
+        if not settings.vision_agent_enabled:
+            raise Conflict(
+                "视觉研判已关闭", detail={"reason": "vision_agent_disabled"}
+            )
+        if (
+            settings.vision_agent_once_per_task
+            and result.agent_status == AGENT_STATUS_SUCCEEDED
+            and result.agent_run_id
+        ):
             reused = await self._reuse_response(tenant_id, int(result.agent_run_id))
             if reused is not None:
                 return reused

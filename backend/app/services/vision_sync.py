@@ -169,10 +169,12 @@ class VisionSyncPoller:
         return int(min(delay, float(self.settings.vision_poll_backoff_max_s)))
 
     def _timed_out(self, task: VisionTask, now: datetime) -> bool:
-        created = task.created_at
-        if created is None:
+        # 以最近一次派发为超时起点：retry 会清 started_at 并刷新 dispatched_at，
+        # 若仍用 created_at，创建超过 1800s 的旧任务会在重试后立刻被判超时。
+        base = task.dispatched_at or task.created_at
+        if base is None:
             return False
-        return now - _aware(created) > timedelta(
+        return now - _aware(base) > timedelta(
             seconds=float(self.settings.vision_task_timeout_s)
         )
 
@@ -309,20 +311,30 @@ class VisionSyncPoller:
 
     # ------------------------------------------------------------ 启动补派发
     async def _redispatch_pending(self) -> None:
-        """``pending && dispatch_attempts == 0`` 的任务立即派发。"""
+        """``pending && dispatch_attempts == 0`` 的任务立即派发。
+
+        每个任务独立会话：单个任务异常不会污染会话，也不会阻断后续补派发。
+        """
         async with self.session_factory() as session:
-            tasks = await VisionRepo(session).pending_never_dispatched()
-            for task in tasks:
-                task_uid = task.task_uid
-                token = set_tenant_id(task.tenant_id)
-                try:
+            rows = await VisionRepo(session).pending_never_dispatched()
+            pending = [(task.id, task.tenant_id, task.task_uid) for task in rows]
+        for task_id, tenant_id, task_uid in pending:
+            token = set_tenant_id(tenant_id)
+            try:
+                async with self.session_factory() as session:
+                    task = await VisionRepo(session).get_task_by_id(tenant_id, task_id)
+                    if (
+                        task is None
+                        or task.status != "pending"
+                        or int(task.dispatch_attempts or 0) != 0
+                    ):
+                        continue
                     await self._dispatch(session, task)
                     await session.commit()
-                except Exception:  # noqa: BLE001 - 单任务异常不阻断其余补派发
-                    logger.exception("vision 启动补派发异常 task_uid=%s", task_uid)
-                    break
-                finally:
-                    reset_tenant_id(token)
+            except Exception:  # noqa: BLE001 - 单任务异常不阻断其余补派发
+                logger.exception("vision 启动补派发异常 task_uid=%s", task_uid)
+            finally:
+                reset_tenant_id(token)
 
     async def _dispatch(self, session: Any, task: VisionTask) -> None:
         """调用 vision-service 创建任务；失败只记录，任务交给轮询/超时处理。"""

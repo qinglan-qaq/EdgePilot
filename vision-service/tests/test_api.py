@@ -105,3 +105,16 @@ def test_reload_models_reports_missing_weights(tmp_path):
 def test_models_endpoint_lists_license(client):
     body = client.get("/v1/models").json()
     assert body["models"][0]["license"] == "AGPL-3.0"
+
+
+def test_job_rejects_dot_segment_task_uid(tmp_path, monkeypatch):
+    """task_uid 的字符集允许点号，但 "."/".." 会成为路径段，必须在契约层拒绝。"""
+    install_fake_cv2(monkeypatch, frame_count=10)
+    video = write_video(tmp_path / "clip.mp4")
+    with make_client(make_settings(tmp_path)) as client:
+        for task_uid in (".", ".."):
+            response = client.post(
+                "/v1/jobs",
+                json={"task_uid": task_uid, "video_path": str(video.resolve())},
+            )
+            assert response.status_code == 422, (task_uid, response.text)

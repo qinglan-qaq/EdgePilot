@@ -1,9 +1,9 @@
 # EdgePilot 视觉中心（Vision Center）交付说明
 
-- 交付日期：2026-11-27
-- 交付范围：`e40d705..810ae55`（16 个提交）中的 Vision Center 全部功能、测试、文档与 Docker 集成；本文档与 `docs/evidence/vision/` 为随后的一次交付提交。
+- 交付日期：2026-11-26
+- 交付范围：`e40d705` 起的 17 个提交（含终审修复批次）中的 Vision Center 全部功能、测试、文档与 Docker 集成；本文档与 `docs/evidence/vision/` 为随后的交付提交。
 - 设计依据：[spec](./2026-11-26-edgepilot-vision-spec.md)、[design](./2026-11-26-edgepilot-vision-design.md)、[plan](./2026-11-26-edgepilot-vision-plan.md)。
-- 结论：P1–P6 全部落地，真实视频 `vtest.avi` 经真实 YOLO11n CPU 推理跑通「上传 → 推理 → 结果落盘 → 播放器叠框 → 事件 → 工作流 / Agent 研判」闭环；全量测试 **864 通过 / 0 失败**。
+- 结论：P1–P6 全部落地，真实视频 `vtest.avi` 经真实 YOLO11n CPU 推理跑通「上传 → 推理 → 结果落盘 → 播放器叠框 → 事件 → 工作流 / Agent 研判」闭环；全量测试 **870 通过 / 0 失败**。
 
 ## 0. 交付结论速览
 
@@ -11,7 +11,7 @@
 | --- | --- |
 | 真实推理 | 795 帧、6,790 次检测、person 4,618，最高置信度 0.9168；证据见第 8 节 |
 | 端到端联调 | Docker Compose 实跑：任务 completed、16 个事件、工作流 Run #7 succeeded、AgentRun #253 succeeded |
-| 测试 | 后端 696、推理服务 37、前端 131，合计 864 全部通过；`vue-tsc` 无错误 |
+| 测试 | 后端 701、推理服务 38、前端 131，合计 870 全部通过；`vue-tsc` 无错误 |
 | 隔离性 | 关闭或停止 vision 不影响登录、Agent、工作流、设备、事件等既有模块 |
 | 既有模块 | 未改动既有 Agent/工作流/设备/事件中心行为；`POST /agents/{id}/test` 仍仅 admin |
 | 许可 | AGPL-3.0；AGPL 合规使用或 Ultralytics Enterprise License 二选一，不默认授予商业使用权 |
@@ -20,12 +20,12 @@
 
 相对 Vision 工作起点 `d5a0bd1`，共 **97 个受版本控制文件**（新增 73 / 修改 24），另有 9 个证据文件与本文档。
 
-### 1.1 后端应用（20）
+### 1.1 后端应用（21）
 
 | 类别 | 文件 |
 | --- | --- |
 | API | `backend/app/api/v1/vision.py`（新增，14 路由）、`backend/app/api/v1/router.py`（挂载） |
-| 配置/入口 | `backend/app/core/config.py`（26 个 `VISION_*` 配置）、`backend/app/core/exceptions.py`（Conflict→409）、`backend/app/main.py`（轮询器 lifespan、关闭时停轮询） |
+| 配置/入口 | `backend/app/core/config.py`（25 个 `VISION_*` 配置）、`backend/app/core/exceptions.py`（Conflict→409）、`backend/app/main.py`（轮询器 lifespan、关闭时停轮询） |
 | 模型 | `backend/app/models/vision.py`（3 表）、`backend/app/models/__init__.py` |
 | 仓储 | `backend/app/repositories/vision_repo.py`、`backend/app/repositories/workflow_repo.py`（按事件类型/载荷查找运行） |
 | 契约 | `backend/app/schemas/vision.py` |
@@ -227,7 +227,8 @@ WHERE trigger_type = 'event'
 ### 5.3 保留与清理
 
 - 默认保留天数 `VISION_RESULT_RETENTION_DAYS=90`。
-- `POST /vision/cleanup`（admin）与 `backend/scripts/vision_cleanup.py`：默认删除视频与 artifact，保留 PG 汇总并写审计 `vision.cleanup`；`--purge-db` 才删结果行，任务仍可查询，结果标记 `purged`。
+- 清理入口只有 `backend/scripts/vision_cleanup.py`（服务层 + CLI）：默认删除视频与 artifact，保留 PG 汇总并写审计 `vision.cleanup`；`--purge-db` 才删结果行，任务仍可查询，结果标记 `purged`。
+- HTTP 未暴露清理路由（14 个 `/vision/*` 路由不含 cleanup），避免把批量删除能力挂到在线接口；如后续需要，必须另加 admin 权限、二次确认与审计。
 - 越界路径只告警不删文件；删除前支持 dry-run 核对行数。
 
 ### 5.4 开发库实际状态
@@ -239,7 +240,7 @@ WHERE trigger_type = 'event'
 
 | 页面 | 路径 | 功能 |
 | --- | --- | --- |
-| 识别概览 | `/vision` | 指标卡（任务/完成/失败/事件/帧/检测）、最近任务、上传入口（admin/operator） |
+| 识别概览 | `/vision` | 指标卡（任务/完成/失败/事件/帧/检测）、最近任务；上传表单位于 `/vision/detect` |
 | 视频识别 | `/vision/detect` | 选择视频、置信度/采样参数、上传、2 秒轮询进度与错误原因 |
 | 识别记录 | `/vision/records` | 状态/关键字/时间筛选、分页、跳转详情 |
 | 识别详情 | `/vision/records/:taskUid` | 播放器 + 当前帧目标面板、事件列表、取消/重试/触发联动/Agent 研判、结果截断提示 |
@@ -256,23 +257,23 @@ WHERE trigger_type = 'event'
 
 ## 7. 测试执行结果与通过率
 
-执行日期 2026-11-27，Windows 11，Python 3.11，真实权重与 `vtest.avi` 已就位。
+执行日期 2026-11-26，Windows 11，Python 3.11，真实权重与 `vtest.avi` 已就位。
 
 | 套件 | 命令 | 结果 | 通过率 | 耗时 |
 | --- | --- | --- | --- | --- |
-| 后端全量 | `cd backend && RUN_REAL_YOLO=1 VISION_REAL_EVIDENCE_JSON=… python -m pytest -q` | **696 passed**，0 failed / 0 skipped | 100% | 176.09s |
-| 推理服务全量 | `cd vision-service && RUN_REAL_YOLO=1 VISION_MODEL_PATH=weights/yolo11n.pt python -m pytest -q` | **37 passed**（含真实推理） | 100% | 160.52s |
-| 前端单测 | `cd web && npm test` | **131 passed / 20 files** | 100% | 71.33s |
+| 后端全量 | `cd backend && RUN_REAL_YOLO=1 VISION_REAL_EVIDENCE_JSON=… python -m pytest -q` | **701 passed**，0 failed / 0 skipped | 100% | 165.71s |
+| 推理服务全量 | `cd vision-service && RUN_REAL_YOLO=1 VISION_MODEL_PATH=weights/yolo11n.pt python -m pytest -q` | **38 passed**（含真实推理） | 100% | 135.39s |
+| 前端单测 | `cd web && npm test -- --run` | **131 passed / 20 files** | 100% | 70.69s |
 | 前端类型 | `cd web && npx vue-tsc --noEmit` | 退出码 0，无错误 | — | — |
-| **合计** | — | **864 passed / 0 failed** | **100%** | — |
+| **合计** | — | **870 passed / 0 failed** | **100%** | — |
 
 说明：后端真实证据用例由 `RUN_REAL_YOLO=1` 与 `VISION_REAL_EVIDENCE_JSON` 双重门控；未设置门控时该用例 skip，其余照常执行，绝不生成假 person 检测。单独执行 `test_inference_real.py` 为 1 passed，耗时 90.81s。
 
 ### 7.1 视觉模块用例分布
 
-- 后端视觉测试：15 个文件、197 个测试函数（其中 `test_vision_api.py` 36、`test_vision_upload.py` 18、`test_vision_media.py` 16、`test_vision_storage.py` 15、`test_vision_client.py` 15、`test_vision_agent.py` 14、`test_vision_trigger.py` 13、`test_vision_sync.py` 13、`test_vision_schemas.py` 13、`test_vision_rules_events.py` 13、`test_vision_completion.py` 9、`test_vision_cleanup.py` 9、`test_vision_resilience.py` 6、`test_vision_acceptance.py` 5、`test_vision_linkage.py` 2）。
-- 前端视觉测试：5 个文件、47 个用例（pages 19、store 14、utils 7、player 4、api 3）。
-- 推理服务：8 个测试文件、37 个用例，含真实视频推理与标准化/作业/配置/API。
+- 后端视觉测试：15 个文件、220 个用例（含参数化展开；其中 `test_vision_api.py` 36、`test_vision_media.py` 24、`test_vision_client.py` 24、`test_vision_upload.py` 20、`test_vision_agent.py` 16、`test_vision_storage.py` 15、`test_vision_sync.py` 14、`test_vision_schemas.py` 14、`test_vision_trigger.py` 13、`test_vision_rules_events.py` 13、`test_vision_completion.py` 9、`test_vision_cleanup.py` 9、`test_vision_resilience.py` 6、`test_vision_acceptance.py` 5、`test_vision_linkage.py` 2）。
+- 前端视觉测试：5 个文件、47 个用例（pages 19、utils 14、player 7、store 4、api 3）。
+- 推理服务：8 个测试文件、38 个用例，含真实视频推理与标准化/作业/配置/API。
 
 ### 7.2 验收项覆盖
 

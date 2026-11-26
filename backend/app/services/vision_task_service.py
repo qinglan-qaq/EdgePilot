@@ -25,13 +25,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import UploadFile
+from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.exceptions import AppError, Conflict, NotFound
 from app.models.user import User
-from app.models.vision import VisionTask
+from app.models.vision import VisionResult, VisionTask
 from app.repositories.vision_repo import VisionRepo
 from app.services.vision_client import VisionClient, VisionServiceError
 from app.services.vision_storage import SavedUpload, VisionStorage
@@ -46,6 +47,12 @@ RETRYABLE_STATUSES = frozenset({"failed", "cancelled"})
 
 class VideoTooLong(AppError):
     """视频时长超限：请求本身不合法，422 拒绝且不落任务（brief T11 错误表）。"""
+
+    code = http_status = 422
+
+
+class InvalidParameter(AppError):
+    """上传参数超出配置上限：422 拒绝且不落任务。"""
 
     code = http_status = 422
 
@@ -179,6 +186,15 @@ class VisionTaskService:
         else:
             probe_error = None
 
+        # 3) 后端自己的时长上限：不依赖推理服务配置，保证 VISION_MAX_VIDEO_SECONDS 生效。
+        duration_ms = (probe or {}).get("duration_ms")
+        if duration_ms and int(duration_ms) > int(settings.vision_max_video_seconds) * 1000:
+            _discard(saved)
+            raise VideoTooLong(
+                f"视频时长超过 {settings.vision_max_video_seconds} 秒上限",
+                detail={"reason": "video_too_long"},
+            )
+
         model_key = settings.vision_model_key
         model_version = (probe or {}).get("model_version") or ""
         stride = effective_stride(frame_stride, int(target_samples), probe)
@@ -193,16 +209,16 @@ class VisionTaskService:
             zones,
         )
 
-        # 3) 查重：命中既有任务则丢弃本次临时文件，不重复派发。
+        # 4) 查重：命中既有任务则丢弃本次临时文件，不重复派发。
         existing = await self.repo.get_by_dedup(tenant_id, dedup_key)
         if existing is not None:
             _discard(saved)
             return CreateResult(existing, True)
 
-        # 4) 原子移动：DB 里只记录相对路径。
+        # 5) 原子移动：DB 里只记录相对路径。
         storage.move_into_place(saved)
 
-        # 5) 插入；并发同指纹由唯一约束判定胜负。
+        # 6) 插入；并发同指纹由唯一约束判定胜负。
         # 必须在 SAVEPOINT 内才 add 任务行：若先 add 再 begin_nested()，SAVEPOINT
         # 建立前的隐式 flush 会落在根事务上，冲突会把整个 session 打成
         # PendingRollbackError（共享事务的调用方也会被牵连）。
@@ -258,7 +274,7 @@ class VisionTaskService:
 
         await self.session.commit()
 
-        # 6) 派发：结果只影响任务状态，不影响上传响应。
+        # 7) 派发：结果只影响任务状态，不影响上传响应。
         await self._dispatch(task, storage, client)
         await self.session.commit()
         return CreateResult(task, False)
@@ -291,6 +307,14 @@ class VisionTaskService:
         task.started_at = None
         task.poll_failures = 0
         task.poll_misses = 0
+        # 失败/取消任务通常没有结果行；若存在旧行（例如人工改状态），一并清掉，
+        # 避免新 artifact 复用旧的 workflow/agent 指针。
+        await self.session.execute(
+            delete(VisionResult).where(
+                VisionResult.tenant_id == tenant_id,
+                VisionResult.task_id == task.id,
+            )
+        )
         await self.session.flush()
 
         storage = self._storage(settings)

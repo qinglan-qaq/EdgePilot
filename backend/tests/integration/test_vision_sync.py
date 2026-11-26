@@ -320,6 +320,24 @@ async def test_timeout_cancels_remote_and_fails_task(poller, fake_client, sessio
     assert task.finished_at is not None
 
 
+async def test_timeout_window_starts_at_latest_dispatch(poller, fake_client, session):
+    """重试后的任务按最近一次派发计时，不能因旧 created_at 立刻超时。"""
+    task = await _seed_task(
+        session,
+        status="running",
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=7200),
+    )
+    task.dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    await session.flush()
+
+    await poller.tick()
+    await session.refresh(task)
+
+    assert fake_client.cancel_calls == 0
+    assert task.status == "running"
+    assert task.error_code is None
+
+
 async def test_remote_failed_copies_error_and_stops_polling(poller, fake_client, session):
     task = await _seed_task(session, status="running")
     fake_client.remote_status = "failed"

@@ -75,7 +75,6 @@ class Settings(BaseSettings):
     vision_event_cooldown_s: int = 5
     vision_trigger_enabled: bool = True
     vision_trigger_workflow_name: str = "视觉事件研判（演示）"
-    vision_trigger_once_per_task: bool = True
     vision_agent_enabled: bool = True
     vision_agent_once_per_task: bool = True
     vision_max_retries: int = 3

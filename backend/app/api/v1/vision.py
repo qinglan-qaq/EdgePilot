@@ -58,7 +58,7 @@ from app.services.vision_storage import (
     VisionStorage,
     artifact_digest,
 )
-from app.services.vision_task_service import VisionTaskService
+from app.services.vision_task_service import InvalidParameter, VisionTaskService
 from app.services.vision_trigger_service import VisionTriggerService
 
 logger = logging.getLogger(__name__)
@@ -509,6 +509,17 @@ async def create_vision_task(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     settings = get_settings()
+    # 配置上限由后端把关：超出时 422 且不落任务，不把非法参数留给推理服务。
+    if frame_stride is not None and int(frame_stride) > int(settings.vision_max_frame_stride):
+        raise InvalidParameter(
+            f"frame_stride 不能超过 {settings.vision_max_frame_stride}",
+            detail={"reason": "invalid_parameter"},
+        )
+    if target_samples is not None and int(target_samples) > int(settings.vision_max_samples):
+        raise InvalidParameter(
+            f"target_samples 不能超过 {settings.vision_max_samples}",
+            detail={"reason": "invalid_parameter"},
+        )
     result = await VisionTaskService(session).create_upload(
         file,
         conf_threshold=float(

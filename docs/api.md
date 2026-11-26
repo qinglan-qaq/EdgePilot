@@ -243,9 +243,10 @@ admin/operator；视频路由只认签名 token，不需要 `Authorization` 头�
 | 409 | `task_not_retryable` / `retry_limit_exceeded` | 状态不允许重试、达到 `VISION_MAX_RETRIES` |
 | 409 | `result_not_found` / `trigger_pending` | 重触发时结果未生成或联动仍在 pending |
 | 409 | `no_vision_events` / `vision_agent_missing` / `vision_agent_running` | 无事件可研判、无可用 Vision Agent、研判进行中 |
+| 409 | `vision_agent_disabled` | `VISION_AGENT_ENABLED=false` 时调用研判接口 |
 | 409 | `upload_conflict` | 同 dedup_key 并发上传竞争后仍读不到赢家任务，需重试 |
 | 413 | `file_too_large` | 超过 `VISION_MAX_UPLOAD_MB` |
-| 422 | `video_too_long` / `artifact_unreadable` | 时长超限（probe 阶段拒绝）、结果文件结构非法 |
+| 422 | `video_too_long` / `invalid_parameter` / `artifact_unreadable` | 时长超限（probe 阶段拒绝）、`frame_stride`/`target_samples` 超过配置上限、结果文件结构非法 |
 | 503 | `vision_disabled` / `artifact_corrupted` | 功能关闭、artifact 哈希不符 |
 | 507 | `storage_write_failed` | 视频/结果写入磁盘失败 |
 

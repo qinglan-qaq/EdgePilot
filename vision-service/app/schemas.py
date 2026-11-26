@@ -22,6 +22,14 @@ class JobCreate(BaseModel):
     video_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     params: JobParams = Field(default_factory=JobParams)
 
+    @field_validator("task_uid")
+    @classmethod
+    def _reject_dot_segments(cls, value: str) -> str:
+        # 字符集已排除路径分隔符，仅需拒绝可逃出 jobs 目录的 "." / ".."。
+        if value in {".", ".."}:
+            raise ValueError("task_uid must not be a dot segment")
+        return value
+
     @field_validator("filename")
     @classmethod
     def _strip_filename(cls, value: str | None) -> str | None:

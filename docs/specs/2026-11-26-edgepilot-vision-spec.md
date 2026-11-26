@@ -231,7 +231,7 @@ dedup_key = "vision:{task_uid}:{event_type}:{frame_id}:{class_id}"[:128]
 - 触发开关：`VISION_TRIGGER_ENABLED`（默认 true）。
 - 工作流选择：当前租户内、`name == VISION_TRIGGER_WORKFLOW_NAME`、`status == published` 的第一条。
 - 触发时机：任务完成且事件写入提交成功后。
-- 幂等：`WorkflowRepo` 查询 `workflow_runs` 中 `trigger_type='event'` 且 `trigger_payload->>'vision_task_uid' = :uid`；存在则跳过。默认每任务只触发一次（`VISION_TRIGGER_ONCE_PER_TASK=true`）。
+- 幂等：`WorkflowRepo` 查询 `workflow_runs` 中 `trigger_type='event'` 且 `trigger_payload->>'vision_task_uid' = :uid`；存在则跳过。每任务只触发一次由数据库部分唯一索引 `uq_workflow_runs_vision_task` 强制，不提供关闭开关（避免与索引语义冲突）。
 - `RunService.create()` 入参：
   - `input_data`：`{"task_uid","video_filename","event_ids","event_count","summary"}`
   - `trigger_type="event"`
@@ -920,16 +920,17 @@ CREATE TABLE vision_models (
 | `VISION_POLL_MAX_FAILURES` | `30` | 连续失败后置 failed |
 | `VISION_STORAGE_DIR` | `<storage_dir>/vision` | 视频与 artifact 根目录（相对路径按 backend cwd） |
 | `VISION_MAX_UPLOAD_MB` | `200` | 上传上限 |
-| `VISION_MAX_VIDEO_SECONDS` | `900` | 超过仍处理，但放大步长并提示 |
+| `VISION_MAX_VIDEO_SECONDS` | `900` | 超过直接拒绝（`422 video_too_long`） |
 | `VISION_TARGET_FRAMES` | `900` | 自动步长目标 |
+| `VISION_MAX_SAMPLES` | `2000` | `target_samples` 硬上限（超过 `422 invalid_parameter`） |
 | `VISION_DEFAULT_CONF` | `0.25` | 默认阈值 |
-| `VISION_MAX_FRAME_STRIDE` | `300` | 最大步长 |
+| `VISION_MAX_FRAME_STRIDE` | `300` | `frame_stride` 上限（超过 `422 invalid_parameter`） |
 | `VISION_EVENT_CONF` | `0.6` | 生成事件的最低置信度 |
 | `VISION_EVENT_COOLDOWN_S` | `5` | 事件冷却 |
 | `VISION_TRIGGER_ENABLED` | `true` | 事件触发工作流 |
 | `VISION_TRIGGER_WORKFLOW_NAME` | `视觉事件研判（演示）` | 目标工作流名 |
-| `VISION_TRIGGER_ONCE_PER_TASK` | `true` | 每任务只触发一次 |
-| `VISION_AGENT_ENABLED` | `true` | 允许直接研判 |
+| `VISION_AGENT_ENABLED` | `true` | 允许直接研判（关闭时 `409 vision_agent_disabled`） |
+| `VISION_AGENT_ONCE_PER_TASK` | `true` | 研判成功后同任务复用运行 |
 | `VISION_MAX_RETRIES` | `3` | 手动重试上限 |
 | `VISION_RESULT_RETENTION_DAYS` | `90` | 清理阈值 |
 

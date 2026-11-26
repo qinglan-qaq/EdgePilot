@@ -684,3 +684,49 @@ def test_llm_uses_agent_mock_fixture(vision_service_cls):
         SimpleNamespace(config={"mock_fixture": "   "}),
     ):
         assert service._llm(agent).fixture_name is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_agent_rejects_analyze(
+    monkeypatch,
+    session,
+    admin_user,
+    vision_agent,
+    completed_task_with_events,
+    fake_llm,
+    vision_service_cls,
+):
+    """``VISION_AGENT_ENABLED=false`` 时研判入口明确 409，且不调用 LLM。"""
+    monkeypatch.setattr(get_settings(), "vision_agent_enabled", False)
+
+    with pytest.raises(Conflict) as exc:
+        await vision_service_cls(session).analyze_task(
+            completed_task_with_events.task.task_uid, user=admin_user
+        )
+
+    assert exc.value.detail == {"reason": "vision_agent_disabled"}
+    assert fake_llm.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_once_per_task_false_allows_new_run(
+    monkeypatch,
+    session,
+    admin_user,
+    vision_agent,
+    completed_task_with_events,
+    fake_llm,
+    vision_service_cls,
+):
+    """关闭每任务复用后，第二次 analyze 必须新建 AgentRun 并再次调用 LLM。"""
+    monkeypatch.setattr(get_settings(), "vision_agent_once_per_task", False)
+    service = vision_service_cls(session)
+    uid = completed_task_with_events.task.task_uid
+
+    first = await service.analyze_task(uid, user=admin_user)
+    second = await service.analyze_task(uid, user=admin_user)
+
+    assert first["status"] == "succeeded"
+    assert second["status"] == "succeeded"
+    assert first["id"] != second["id"]
+    assert fake_llm.calls == 2
