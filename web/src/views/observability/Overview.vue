@@ -82,10 +82,17 @@ function rangeQuery(preset: RangePreset): AnalyticsQuery {
   return { start_from: new Date(Date.now() - hours * 3600_000).toISOString() }
 }
 
+/**
+ * 按当前时间预设加载概览。
+ *
+ * 关键节点：24 小时走后端默认窗口；其他预设只传 start_from，
+ * 结束时间由后端取当前时刻，避免前后端时钟偏差。
+ */
 function load(): void {
   void store.loadOverview(rangeQuery(range.value))
 }
 
+/** 切换时间范围后立即重载；旧响应由 store 的单调令牌丢弃。 */
 function handleRangeChange(): void {
   load()
 }

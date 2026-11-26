@@ -116,7 +116,14 @@ function stopPolling(): void {
   }
 }
 
-/** 仅非终态运行才启动轮询；已有定时器则保持原节流节奏。 */
+/**
+ * 仅非终态运行才启动轮询；已有定时器则保持原节流节奏。
+ *
+ * 关键节点：
+ * 1. 终态运行立即停表，避免无意义请求；
+ * 2. 已有定时器时不重复创建，防止切换运行后出现多条轮询；
+ * 3. 轮询间隔固定为 POLL_INTERVAL（3 秒）。
+ */
 function syncPolling(): void {
   if (!run.value || isTerminalRunStatus(run.value.status)) {
     stopPolling()
@@ -145,6 +152,13 @@ function applyRun(detail: WorkflowRunDetail): void {
   syncPolling()
 }
 
+/**
+ * 首次加载运行详情，并据状态决定是否开始轮询。
+ *
+ * 关键节点：
+ * 1. loadToken 保证路由切换后旧响应不会覆盖新运行；
+ * 2. 失败时清空页面数据并停止轮询，避免继续请求不存在的运行。
+ */
 async function load(): Promise<void> {
   const id = runId.value
   if (id === null) {
@@ -177,7 +191,14 @@ async function load(): Promise<void> {
   }
 }
 
-/** 轮询失败时保留旧数据，只显示轻量告警并继续下一轮。 */
+/**
+ * 轮询运行详情；失败时保留旧数据，只显示轻量告警并继续下一轮。
+ *
+ * 关键节点：
+ * 1. pollInFlight 防止上一轮未返回时重复发请求；
+ * 2. 用 stateVersion 识别“期间发生过加载/审批/取消/路由切换”，丢弃过期响应；
+ * 3. 轮询失败不清空页面，避免观察页因短暂网络抖动变空。
+ */
 async function poll(): Promise<void> {
   const id = runId.value
   if (id === null || pollInFlight) {
@@ -205,6 +226,15 @@ async function poll(): Promise<void> {
   }
 }
 
+/**
+ * 批准当前等待中的审批节点。
+ *
+ * 关键节点：
+ * 1. 后端用运行详情返回最新状态，页面直接整体替换，避免本地拼状态；
+ * 2. 失败只写 actionError，不影响轮询继续刷新。
+ *
+ * @param comment 审批意见，可为空。
+ */
 async function handleApprove(comment: string): Promise<void> {
   if (!run.value || acting.value) {
     return
@@ -237,6 +267,14 @@ async function handleReject(comment: string): Promise<void> {
   }
 }
 
+/**
+ * 取消运行：二次确认后才调用后端。
+ *
+ * 关键节点：
+ * 1. 取消不可恢复，因此先弹确认框；
+ * 2. 只有非终态且具备权限时才允许调用；
+ * 3. 成功后用后端返回的详情整体替换页面，并停止轮询。
+ */
 async function handleCancel(): Promise<void> {
   if (!run.value || !canCancel.value || acting.value) {
     return

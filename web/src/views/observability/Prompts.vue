@@ -284,6 +284,17 @@ async function submitVersion(): Promise<void> {
 
 // ---- 发布 / 回滚 --------------------------------------------------------
 
+/**
+ * 发布或回滚到指定版本。
+ *
+ * 关键节点：
+ * 1. 历史版本不可变，发布/回滚只切换 template.active_version；
+ * 2. 二次确认文案明确“不修改任何历史版本内容”；
+ * 3. 成功后同时刷新模板分页与详情，保证版本列表与 active 标记一致。
+ *
+ * @param action publish 或 rollback。
+ * @param version 目标版本号。
+ */
 async function confirmSwitch(action: 'publish' | 'rollback', version: number): Promise<void> {
   if (selectedPk.value === null) {
     return

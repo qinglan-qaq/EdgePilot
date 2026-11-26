@@ -105,7 +105,15 @@ function queryEquals(target: Record<string, string>): boolean {
   return targetKeys.every((key) => queryValue(route.query[key]) === target[key])
 }
 
-/** 写回 URL；同 query 点击查询/重置时显式重载，保证用户仍能得到最新数据。 */
+/**
+ * 把筛选条件写回 URL；URL 是列表查询的唯一事实来源。
+ *
+ * 关键节点：
+ * 1. query 未变化时显式 reload，保证用户重复点“查询”也能拿到最新数据；
+ * 2. 变化时用 router.replace，不新增历史记录，避免后退键被筛选污染。
+ *
+ * @param target 目标 query（已按空值裁剪）。
+ */
 async function navigateQuery(target: Record<string, string>): Promise<void> {
   if (queryEquals(target)) {
     reload()

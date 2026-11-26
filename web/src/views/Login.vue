@@ -38,6 +38,14 @@ function errorToMessage(error: unknown): string {
   return '登录失败，请稍后重试'
 }
 
+/**
+ * 提交登录：表单校验 → 换令牌并拉取账号 → 跳回来源页。
+ *
+ * 关键节点：
+ * 1. 先 trim 邮箱并做表单校验，避免把空格带进后端；
+ * 2. 登录成功后只接受站内 redirect，防止开放重定向；
+ * 3. 失败信息来自 ApiError.message，直接展示给用户。
+ */
 async function handleSubmit(): Promise<void> {
   if (submitting.value) {
     return

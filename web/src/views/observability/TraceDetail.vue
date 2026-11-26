@@ -68,7 +68,10 @@ async function copyTraceId(): Promise<void> {
 
 /**
  * 加载完成后再按 ?span= 恢复选中；刷新页面可停留在同一个 Span。
- * trace_id 变化时丢弃过期结果。
+ *
+ * 关键节点：
+ * 1. 先加载整页数据，再校验 URL 中的 span 是否存在于本次 Trace；
+ * 2. trace_id 变化时丢弃过期结果，避免把上一条 Trace 的树画出来。
  */
 async function load(): Promise<void> {
   const id = traceId.value
@@ -85,7 +88,14 @@ async function load(): Promise<void> {
   }
 }
 
-/** 选中 Span：左侧树与时间线共用；同时写回 ?span= 便于刷新恢复。 */
+/**
+ * 选中 Span：左侧树与时间线共用。
+ *
+ * 关键节点：选中态与 URL 的 `?span=` 同步，刷新或分享链接可恢复到同一个 Span；
+ * 已选中同一 Span 时不重复请求详情。
+ *
+ * @param spanId 目标 Span 的 16 位 ID。
+ */
 async function selectSpan(spanId: string): Promise<void> {
   if (store.selectedSpanId !== spanId) {
     void store.selectTraceSpan(spanId)

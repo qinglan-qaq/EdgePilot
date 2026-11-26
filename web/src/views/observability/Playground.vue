@@ -210,6 +210,18 @@ function parseVariables(): Record<string, unknown> | null {
   }
 }
 
+/**
+ * 渲染预览或真实执行当前 Prompt 版本。
+ *
+ * 关键节点：
+ * 1. 预览（execute=false）只渲染，不调用模型、不产生执行记录；
+ * 2. 真实执行（execute=true）要求 admin/operator，前端先拦一次，
+ *    后端仍会再校验；
+ * 3. 变量必须是合法 JSON 对象，否则本地直接报错，不发请求；
+ * 4. 渲染失败时后端返回 200 + response=null，页面仍展示渲染结果。
+ *
+ * @param execute true 表示真实调用 LLM 并写入 prompt_executions。
+ */
 async function run(execute: boolean): Promise<void> {
   if (selectedPk.value === null || selectedVersionNo.value === null) {
     return

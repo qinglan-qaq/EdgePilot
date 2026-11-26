@@ -359,6 +359,14 @@ function isValidConnection(connection: Connection): boolean {
 
 /**
  * 创建连线；模板 @connect 与 defineExpose 暴露的测试接缝共用此函数。
+ *
+ * 关键节点：
+ * 1. 只读角色不能改图，直接拒绝；
+ * 2. 连线合法性（起止节点、是否重复、是否自环）由 `connectFlowNodes` 统一判定；
+ * 3. 非法连线只提示、不落地，避免画布出现后端校验不过的 DSL。
+ *
+ * @param connection Vue Flow 提供的起止节点与句柄信息。
+ * @returns 是否成功加入画布。
  */
 function applyConnection(connection: Connection): boolean {
   if (!canEdit.value) {
@@ -424,7 +432,17 @@ function handleSelectIssue(nodeId: string): void {
   selectedNodeId.value = nodeId
 }
 
-/** 保存草稿；announce 为 false 时不显示成功提示（发布流程复用）。 */
+/**
+ * 保存草稿；发布流程复用本函数。
+ *
+ * 关键节点：
+ * 1. 只读、无 id、正在保存时不重复提交；
+ * 2. 保存成功后用后端返回的版本/状态刷新页面，并记录已保存快照；
+ * 3. 已保存快照用于判断“是否有未保存改动”，离开页面前提示。
+ *
+ * @param announce 是否弹出成功提示；发布流程传 false 避免双提示。
+ * @returns 是否保存成功。
+ */
 async function saveDraft(announce = true): Promise<boolean> {
   const id = workflowId.value
   if (id === null || !canEdit.value || saving.value) {
@@ -460,7 +478,14 @@ async function saveDraft(announce = true): Promise<boolean> {
   }
 }
 
-/** 发布：先保存草稿，再调用发布；400 时自动拉取校验明细。 */
+/**
+ * 发布：先保存草稿，再调用发布接口。
+ *
+ * 关键节点：
+ * 1. 必须先把画布保存成草稿，否则发布的是旧 DSL；
+ * 2. 发布成功后刷新当前版本与状态，页面的“可试跑”条件随之满足；
+ * 3. 后端返回 400 说明 DSL 校验未通过，这里自动拉取校验明细给用户定位。
+ */
 async function handlePublish(): Promise<void> {
   const id = workflowId.value
   if (id === null || !canPublish.value || publishing.value) {
@@ -527,7 +552,14 @@ function parseRunInput(): Record<string, unknown> | null {
   return parsed as Record<string, unknown>
 }
 
-/** 创建 pending 运行记录；本页不轮询执行进度。 */
+/**
+ * 创建 pending 运行记录；本页不轮询执行进度。
+ *
+ * 关键节点：
+ * 1. 输入必须先通过 JSON 对象校验，空文本按 `{}` 处理；
+ * 2. 后端只负责创建 run 并投递 worker，真正的执行发生在 Celery 侧；
+ * 3. 页面把返回的运行详情展示给用户，进度需要到运行详情页查看。
+ */
 async function submitRun(): Promise<void> {
   const id = workflowId.value
   if (id === null || !canStartRun.value || running.value) {
