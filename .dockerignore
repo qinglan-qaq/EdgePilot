@@ -3,7 +3,9 @@
 **/*.pyc
 **/.pytest_cache
 .venv
+**/.venv/
 var/
+**/var/
 node_modules/
 .git
 tests/
