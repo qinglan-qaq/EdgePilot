@@ -366,9 +366,9 @@ async def get_vision_task(
     video_path = _video_file(storage, task)
     has_video = video_path is not None
     item = _task_item(task, result)
-    # 详情契约只暴露聚合计数：``processed_frames`` / ``sampled_every_n_frames``
-    # 含 "frames" 子串，清理验收要求详情 JSON 不出现任何 frames 字样（帧级数据
-    # 只能来自 /results artifact）。计数仍可从列表与 result.summary 获取。
+    # 只移除任务级计数器（processed_frames / sampled_every_n_frames），让详情
+    # 载荷不携带任何帧级统计；result.summary 仍原样透传（真实 summary 可能自带
+    # processed_frames），详情本身不返回 frames 数组。
     item.pop("processed_frames", None)
     item.pop("sampled_every_n_frames", None)
     item.update(

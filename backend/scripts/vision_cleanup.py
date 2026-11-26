@@ -41,11 +41,16 @@ from app.services.vision_cleanup_service import (  # noqa: E402
 logger = logging.getLogger("vision_cleanup")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(default_days: int = 90) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Delete expired vision media, keep summaries, write audit logs."
     )
-    parser.add_argument("--days", type=int, default=90, help="retention days (default 90)")
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=default_days,
+        help="retention days (default: VISION_RESULT_RETENTION_DAYS)",
+    )
     parser.add_argument(
         "--actor",
         required=True,
@@ -87,7 +92,9 @@ async def _run(args: argparse.Namespace) -> dict:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    parser = build_parser()
+    # 默认保留天数取配置，CLI 显式传入仍覆盖。
+    settings = get_settings()
+    parser = build_parser(settings.vision_result_retention_days)
     args = parser.parse_args()
 
     if args.purge_db and not args.confirm:
