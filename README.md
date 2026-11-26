@@ -109,7 +109,7 @@ cd web && npm run build                    # 类型检查 + 产物
 | 文档 | 内容 |
 |---|---|
 | [architecture.md](./docs/architecture.md) | 组件、分层、数据流、跨进程追踪、部署形态 |
-| [er.md](./docs/er.md) | 25 张表、约束/索引、迁移链、保留策略 |
+| [er.md](./docs/er.md) | 当前 25 张表（第 26 张评测表属 P8）、约束/索引、迁移链、保留策略 |
 | [api.md](./docs/api.md) | 全部 `/api/v1` 路由、权限、信封、错误码 |
 | [runbook.md](./docs/runbook.md) | 启停、迁移、seed、日志、备份、故障排查 |
 | [offline-install.md](./docs/offline-install.md) | 离线包生成、校验、导入、升级/回滚 |
