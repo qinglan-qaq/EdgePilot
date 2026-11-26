@@ -12,9 +12,10 @@
   「结果 → 事件 → 完成」提交并触发联动）；``failed/cancelled`` 复制错误码；
 * 启动时为 ``pending && dispatch_attempts == 0`` 的任务补派发，失败只记日志。
 
-事务约定：每个任务独立提交；本模块**绝不**调用 ``session.rollback()``
-（共享事务的调用方不能被轮询器回滚）。意外异常只记录日志并结束本轮扫描，
-下一轮使用新会话继续。
+事务约定：扫描与每个任务各自使用独立会话并独立提交（启动补派发在同一会话内
+按任务提交）；本模块**绝不**调用 ``session.rollback()``
+（共享事务的调用方不能被轮询器回滚）。单任务意外异常只丢弃该任务的会话并
+记录日志，本轮其余任务继续推进。
 """
 
 from __future__ import annotations
@@ -124,25 +125,40 @@ class VisionSyncPoller:
 
     # ------------------------------------------------------------------ tick
     async def tick(self) -> None:
-        """扫描一次活动任务：超时优先，其次按退避判断是否到期。"""
-        now = datetime.now(timezone.utc)
-        async with self.session_factory() as session:
-            tasks = await VisionRepo(session).list_active()
-            for task in tasks:
-                task_uid = task.task_uid
-                token = set_tenant_id(task.tenant_id)
-                try:
+        """扫描一次活动任务：每任务独立会话，单任务异常不影响其余任务。
+
+        扫描阶段只取 ``(tenant_id, id, task_uid)`` 三元组；随后为每个任务打开
+        新的 ``session_factory()`` 会话并重新加载，这样一次失败（脏数据、
+        序列化失败等）只影响本次会话，后续任务仍按 ``created_at`` 顺序继续。
+        """
+        async with self.session_factory() as scan_session:
+            rows = await VisionRepo(scan_session).list_active()
+            targets = [(row.tenant_id, row.id, row.task_uid) for row in rows]
+
+        for tenant_id, task_id, task_uid in targets:
+            token = set_tenant_id(tenant_id)
+            try:
+                now = datetime.now(timezone.utc)
+                async with self.session_factory() as session:
+                    task = await VisionRepo(session).get_task_by_id(
+                        tenant_id, task_id
+                    )
+                    if task is None or task.status not in ("pending", "running"):
+                        continue
                     if self._timed_out(task, now):
                         await self._timeout(session, task)
                         continue
                     if self._not_due(task, now):
                         continue
                     await self._sync_one(session, task, now)
-                except Exception:  # noqa: BLE001 - 单任务异常中断本轮，避免污染会话
-                    logger.exception("vision 轮询单任务异常 task_uid=%s", task_uid)
-                    break
-                finally:
-                    reset_tenant_id(token)
+            except Exception:  # noqa: BLE001 - 单任务失败只丢弃本任务会话
+                logger.exception(
+                    "vision 轮询单任务异常 tenant_id=%s task_uid=%s",
+                    tenant_id,
+                    task_uid,
+                )
+            finally:
+                reset_tenant_id(token)
 
     def delay_for(self, task: VisionTask) -> int:
         """下次轮询延迟（秒）：``min(interval * 2**failures, backoff_max)``。"""
