@@ -81,8 +81,9 @@ const liveStatus = computed(() => {
   return health.value.reachable ? '可达' : '不可达'
 })
 
+/** 许可只认后端上报；缺失时明确显示未上报，不替模型发明许可证。 */
 const licenseText = computed(
-  () => health.value?.model?.license ?? rows.value[0]?.license ?? 'AGPL-3.0',
+  () => health.value?.model?.license ?? rows.value[0]?.license ?? '未上报',
 )
 </script>
 
@@ -129,9 +130,9 @@ const licenseText = computed(
         {{ health.error ?? 'vision-service 不可达' }}
       </p>
       <p class="vision-models__service-text">
-        请先启动 vision-service：执行
-        <code>uvicorn app.main:app --host 0.0.0.0 --port 8100</code>，或在仓库根目录执行
-        <code>docker compose up -d vision-service</code> 启动容器。
+        请先启动 vision-service：在 <code>vision-service</code> 目录执行
+        <code>uvicorn app.main:app --host 0.0.0.0 --port 8001</code>，与
+        <code>VISION_SERVICE_URL</code> 的默认端口保持一致。
       </p>
     </el-alert>
 
@@ -160,7 +161,9 @@ const licenseText = computed(
           <template #default="{ row }">{{ row.provider ?? '—' }}</template>
         </el-table-column>
         <el-table-column label="设备" width="90">
-          <template #default="{ row }">{{ row.device ?? '—' }}</template>
+          <template #default="{ row }">
+            {{ row.live?.device ?? row.device ?? '未上报' }}
+          </template>
         </el-table-column>
         <el-table-column label="输入尺寸" width="100">
           <template #default="{ row }">

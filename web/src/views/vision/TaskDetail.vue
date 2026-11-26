@@ -3,8 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { ApiError } from '@/api/http'
-import { visionApi } from '@/api/vision'
+import { visionApi, type VisionFrame } from '@/api/vision'
 import AsyncState from '@/components/common/AsyncState.vue'
+import DetectionPanel from '@/components/vision/DetectionPanel.vue'
 import VisionPlayer from '@/components/vision/VisionPlayer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useVisionStore } from '@/stores/vision'
@@ -51,6 +52,10 @@ const result = computed(() => store.task?.result ?? null)
 const classCounts = computed(() => result.value?.class_counts ?? {})
 const acting = ref(false)
 const actionError = ref<string | null>(null)
+const playerRef = ref<InstanceType<typeof VisionPlayer> | null>(null)
+/** 播放器当前命中帧；由 VisionPlayer 的 frame-change 驱动目标面板。 */
+const currentFrame = ref<VisionFrame | null>(null)
+const selectedDetectionId = ref<string | null>(null)
 
 const canWrite = computed(
   () => auth.role === 'admin' || auth.role === 'operator',
@@ -98,6 +103,45 @@ const playerVisible = computed(
     !store.resultsError,
 )
 
+/**
+ * 非阻塞截断提示：后端返回 total 大于实际帧数时，播放器只覆盖已加载部分。
+ * 不隐藏播放器、不当作错误，只明确告知还有多少帧未参与覆盖层。
+ */
+const truncationNotice = computed(() => {
+  const data = store.results
+  if (!data) {
+    return null
+  }
+  const total = data.query?.total
+  if (typeof total !== 'number' || total <= data.frames.length) {
+    return null
+  }
+  return `结果共 ${total} 个采样帧，当前加载 ${data.frames.length} 个；其余帧未参与检测框显示。`
+})
+
+/** 播放器换帧时同步当前帧；选中目标离开当前帧后自动清除选中态。 */
+function handleFrameChange(frame: VisionFrame | null): void {
+  currentFrame.value = frame
+  const selected = selectedDetectionId.value
+  if (
+    selected &&
+    !(frame?.detections ?? []).some(
+      (detection) => detection.detection_id === selected,
+    )
+  ) {
+    selectedDetectionId.value = null
+  }
+}
+
+function handleDetectionSelect(detectionId: string): void {
+  selectedDetectionId.value = detectionId
+}
+
+/** 点击目标回跳播放器到该帧（秒），由播放器自行处理边界。 */
+function handleDetectionSeek(timestampMs: number): void {
+  playerRef.value?.seek(timestampMs / 1000)
+}
+
 function statusLabel(value: string): string {
   return STATUS_LABELS[value] ?? value
 }
@@ -122,6 +166,8 @@ function load(): void {
     return
   }
   actionError.value = null
+  currentFrame.value = null
+  selectedDetectionId.value = null
   store.startPolling(uid.value)
   void store.loadEvents(uid.value)
 }
@@ -249,6 +295,16 @@ onBeforeUnmount(() => {
           show-icon
         />
 
+        <el-alert
+          v-if="truncationNotice"
+          class="task-detail__alert"
+          data-test="truncation-notice"
+          type="info"
+          :title="truncationNotice"
+          :closable="false"
+          show-icon
+        />
+
         <div class="task-detail__panels">
           <el-card class="task-detail__panel" shadow="never">
             <template #header>
@@ -257,10 +313,20 @@ onBeforeUnmount(() => {
 
             <VisionPlayer
               v-if="playerVisible"
+              ref="playerRef"
               :src="task.video_url ?? ''"
               :frames="store.frames"
               :video-width="task.video_width"
               :video-height="task.video_height"
+              :selected-id="selectedDetectionId"
+              @frame-change="handleFrameChange"
+            />
+            <DetectionPanel
+              v-if="playerVisible"
+              :frame="currentFrame"
+              :selected-id="selectedDetectionId"
+              @select="handleDetectionSelect"
+              @seek="handleDetectionSeek"
             />
             <p v-else class="task-detail__placeholder">
               {{ artifactNotice ?? '暂无可播放的视频' }}
@@ -296,7 +362,14 @@ onBeforeUnmount(() => {
                   {{ result.agent_error ?? '—' }}
                 </el-descriptions-item>
                 <el-descriptions-item label="Trace ID">
-                  <span class="task-detail__mono">{{ result.agent_trace_id ?? '—' }}</span>
+                  <router-link
+                    v-if="result.agent_trace_id"
+                    class="task-detail__mono task-detail__trace-link"
+                    :to="`/observability/traces/${result.agent_trace_id}`"
+                  >
+                    {{ result.agent_trace_id }}
+                  </router-link>
+                  <span v-else class="task-detail__mono">—</span>
                 </el-descriptions-item>
               </el-descriptions>
 
@@ -311,13 +384,13 @@ onBeforeUnmount(() => {
                 </el-tag>
               </div>
 
-              <a
+              <router-link
                 v-if="result.workflow_run_id"
                 class="task-detail__run-link"
-                :href="`/runs/${result.workflow_run_id}`"
+                :to="`/runs/${result.workflow_run_id}`"
               >
                 工作流运行 #{{ result.workflow_run_id }}
-              </a>
+              </router-link>
             </template>
             <p v-else class="task-detail__placeholder">暂无识别结果</p>
           </el-card>
@@ -491,6 +564,11 @@ onBeforeUnmount(() => {
   margin-top: 12px;
   color: #2563eb;
   font-size: 13px;
+  text-decoration: none;
+}
+
+.task-detail__trace-link {
+  color: #2563eb;
   text-decoration: none;
 }
 

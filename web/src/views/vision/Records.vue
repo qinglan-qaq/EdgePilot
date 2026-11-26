@@ -109,8 +109,17 @@ async function load(): Promise<void> {
   }
 }
 
+/** 取消未触发的搜索防抖，避免筛选/翻页后又被旧搜索覆盖。 */
+function cancelPendingSearch(): void {
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+}
+
 function handleStatusChange(value: string): void {
   status.value = value
+  cancelPendingSearch()
   // 筛选条件变更必须回到第一页，避免落在超出新结果集的页码。
   page.value = 1
   void load()
@@ -118,6 +127,7 @@ function handleStatusChange(value: string): void {
 
 function handlePageChange(nextPage: number): void {
   page.value = nextPage
+  cancelPendingSearch()
   void load()
 }
 

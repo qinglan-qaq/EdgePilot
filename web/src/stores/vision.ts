@@ -58,6 +58,9 @@ export const useVisionStore = defineStore('vision', () => {
   let pollToken = 0
   let detailToken = 0
   let resultsToken = 0
+  let eventsToken = 0
+  /** 当前轮询任务 UID；用于丢弃跨任务串写的在途响应。 */
+  let activeTaskUid: string | null = null
 
   function clearTimer(): void {
     if (timer !== null) {
@@ -66,8 +69,16 @@ export const useVisionStore = defineStore('vision', () => {
     }
   }
 
-  /** 清空任务/结果缓存，让旧任务的可见数据不会串到新任务。 */
+  /**
+   * 清空任务/结果缓存，让旧任务的可见数据不会串到新任务。
+   *
+   * 同时递增结果/事件令牌：切换任务时在途的旧任务响应必须失效，
+   * 即使旧请求晚于新任务返回也不得写回。
+   */
   function resetTaskState(): void {
+    resultsToken += 1
+    eventsToken += 1
+    activeTaskUid = null
     task.value = null
     results.value = null
     resultsError.value = null
@@ -112,6 +123,8 @@ export const useVisionStore = defineStore('vision', () => {
    * 读取 artifact 帧级结果；失败原因保留在 resultsError。
    *
    * 404 表示结果文件已清理（artifact_missing），页面据此提示且不渲染播放器。
+   * 结果接口在 API 层默认 `limit=2000`（后端上限），避免默认 300 帧截断；
+   * 若响应仍携带 total 且大于实际帧数，页面会给出非阻塞截断提示。
    *
    * @param taskUid 目标任务 UID。
    */
@@ -122,11 +135,21 @@ export const useVisionStore = defineStore('vision', () => {
       if (token !== resultsToken) {
         return
       }
+      // 切换任务后旧响应不得写回；响应自带 task_uid 时再做一次一致性校验。
+      if (activeTaskUid !== null && activeTaskUid !== taskUid) {
+        return
+      }
+      if (data.task_uid && data.task_uid !== taskUid) {
+        return
+      }
       results.value = data
       resultsError.value = null
       artifactMissing.value = false
     } catch (cause) {
       if (token !== resultsToken) {
+        return
+      }
+      if (activeTaskUid !== null && activeTaskUid !== taskUid) {
         return
       }
       results.value = null
@@ -141,13 +164,26 @@ export const useVisionStore = defineStore('vision', () => {
    * @param taskUid 目标任务 UID。
    */
   async function loadEvents(taskUid: string): Promise<void> {
+    const token = ++eventsToken
     eventsError.value = null
     try {
       const response = await visionApi.events(taskUid, { page: 1, size: 20 })
+      if (token !== eventsToken) {
+        return
+      }
+      if (activeTaskUid !== null && activeTaskUid !== taskUid) {
+        return
+      }
       events.value = Array.isArray(response)
         ? response
         : (response?.items ?? [])
     } catch (cause) {
+      if (token !== eventsToken) {
+        return
+      }
+      if (activeTaskUid !== null && activeTaskUid !== taskUid) {
+        return
+      }
       events.value = []
       eventsError.value = errorToMessage(cause)
     }
@@ -205,6 +241,7 @@ export const useVisionStore = defineStore('vision', () => {
   function startPolling(taskUid: string): void {
     stopPolling()
     resetTaskState()
+    activeTaskUid = taskUid
 
     pollToken += 1
     const token = pollToken
@@ -227,7 +264,7 @@ export const useVisionStore = defineStore('vision', () => {
   function reset(): void {
     stopPolling()
     detailToken += 1
-    resultsToken += 1
+    // resetTaskState 会递增结果/事件令牌并清空当前任务。
     resetTaskState()
     error.value = null
   }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { ApiError } from '@/api/http'
 import { visionApi } from '@/api/vision'
@@ -121,6 +121,11 @@ const statusText = computed(() => {
     return ''
   }
   return `${task.status} · ${task.progress}%`
+})
+
+// 离开上传页时停止轮询，避免后台任务进度在无关页面继续请求。
+onBeforeUnmount(() => {
+  store.stopPolling()
 })
 </script>
 

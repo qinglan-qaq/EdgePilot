@@ -137,6 +137,14 @@ export interface VisionResultsParams {
   offset?: number
 }
 
+/**
+ * 结果接口一次取全 artifact 的帧上限（与后端 Query(le=2000) 对齐）。
+ *
+ * 后端默认 `limit=300`，而任务默认抽帧目标约 900 帧；若沿用默认值，
+ * 播放器在第 300 帧之后会静默停更检测框。读全量时显式使用后台上限。
+ */
+export const FULL_RESULTS_LIMIT = 2000
+
 /** GET /vision/tasks/{uid}/results 的响应：artifact 元数据 + 帧窗口。 */
 export interface VisionResults {
   task_uid: string
@@ -293,8 +301,17 @@ export const visionApi = {
     return api.get<VisionTaskDetail>(taskPath(taskUid))
   },
 
-  /** 读取 artifact 帧级结果；清理或哈希不符时后端返回 404/409。 */
-  results(taskUid: string, params: VisionResultsParams = {}): Promise<VisionResults> {
+  /**
+   * 读取 artifact 帧级结果；清理或哈希不符时后端返回 404/409。
+   *
+   * 未显式传参时默认拉取全量帧（`FULL_RESULTS_LIMIT`），避免后端默认
+   * `limit=300` 导致长视频覆盖层在第 300 帧后静默停更；显式筛选参数
+   * 原样透传，不叠加默认值。
+   */
+  results(
+    taskUid: string,
+    params: VisionResultsParams = { limit: FULL_RESULTS_LIMIT },
+  ): Promise<VisionResults> {
     return api.get<VisionResults>(`${taskPath(taskUid)}/results`, { params })
   },
 
