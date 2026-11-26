@@ -54,6 +54,22 @@ class WorkflowRepo(BaseRepository[Workflow]):
             )
         )
 
+    async def find_published_by_name(
+        self, tenant_id: uuid.UUID, name: str
+    ) -> Workflow | None:
+        """按名称取已发布工作流；草稿或缺少发布版本时返回 ``None``。
+
+        Vision 联动按工作流名配置触发，这里只放行可执行的已发布工作流：
+        ``status == "published"`` 且 ``current_version >= 1``。未发布由调用方
+        记为 skipped，而不是抛错。
+        """
+        workflow = await self.get_by_name(tenant_id, name)
+        if workflow is None:
+            return None
+        if workflow.status != "published" or int(workflow.current_version or 0) < 1:
+            return None
+        return workflow
+
     async def list_workflows(
         self, tenant_id: uuid.UUID, page: int, page_size: int
     ) -> tuple[list[Workflow], int]:

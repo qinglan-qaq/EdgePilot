@@ -65,13 +65,24 @@ async def db_conn(migrated_db):
 
 @pytest.fixture
 async def session(db_conn):
-    async with async_sessionmaker(bind=db_conn, expire_on_commit=False)() as s:
+    # create_savepoint：Session 的 commit/rollback 只收敛到 SAVEPOINT，不会把
+    # 外层夹具事务整体提交或回滚。个别用例在 IntegrityError 后 rollback 时，
+    # 夹具数据仍然保留，只有本次失败写入被撤销。
+    async with async_sessionmaker(
+        bind=db_conn,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )() as s:
         yield s
 
 
 @pytest.fixture
 async def session_factory(db_conn):
-    return async_sessionmaker(bind=db_conn, expire_on_commit=False)
+    return async_sessionmaker(
+        bind=db_conn,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
 
 
 @pytest.fixture
