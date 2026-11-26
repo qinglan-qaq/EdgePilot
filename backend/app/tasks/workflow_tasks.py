@@ -39,8 +39,17 @@ def enqueue_workflow_run(
 ) -> bool:
     """投递一次工作流执行；关闭或 broker 故障时返回 ``False``，绝不抛出。
 
-    若有活动 trace，把最小上下文放进私有 kwargs ``__trace__``，由 worker 的
-    ``task_prerun`` 恢复；无活动 trace 时不传该键，保持既有载荷不变。
+    关键节点：
+        1. Celery 未启用时直接返回 False，调用方保持 pending 由扫描兜底；
+        2. 有活动 trace 时把最小上下文放进 ``__trace__``，由 worker 恢复链路；
+        3. 入队失败只告警不抛出，API/审批响应不能被 broker 故障拖垮。
+
+    Args:
+        run_id: 运行主键。
+        resume_node_id: 审批恢复节点；为空表示从 start 开始。
+
+    Returns:
+        True 表示已成功投递到 broker。
     """
     if not get_settings().celery_enabled:
         return False
@@ -69,7 +78,13 @@ def enqueue_workflow_run(
 
 
 async def _execute_run(run_id: int, resume_node_id: str | None) -> dict[str, Any]:
-    """在 worker 事件循环内推进一次运行；新的会话按运行租户收口。"""
+    """在 worker 事件循环内推进一次运行；新的会话按运行租户收口。
+
+    关键节点：
+        1. worker 没有请求级租户，只能先按 run_id 读运行，再切到运行租户；
+        2. finally 必须恢复租户，避免同一 worker 后续任务串租户；
+        3. 运行不存在时返回 not_found，不创建任何 trace。
+    """
     from app.workflow.engine import WorkflowEngine
 
     async with get_session_factory()() as session:

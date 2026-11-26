@@ -206,7 +206,24 @@ class ToolRegistry:
         args: dict | None = None,
         ctx: ToolContext | None = None,
     ) -> ToolResult:
-        """按固定流水线执行工具；失败抛 :class:`ToolExecutionError`。"""
+        """按固定流水线执行工具；失败抛 :class:`ToolExecutionError`。
+
+        关键节点：
+            1. 所有工具调用统一走 ``_execute_inner``，保证每个工具都有 tool span；
+            2. 成功/失败分别累加 ``tool_call_total`` 与错误码指标；
+            3. 结构化错误原样上抛，由工作流引擎决定是否重试。
+
+        Args:
+            tool_id: 工具标识，必须在注册表中存在。
+            args: 调用入参，按工具 input_schema 校验。
+            ctx: 调用上下文（Agent 绑定、权限上限等），可为 None。
+
+        Returns:
+            成功时的 ``ToolResult``，``data`` 为工具输出。
+
+        Raises:
+            ToolExecutionError: 未注册、禁用、权限不足、schema 不合法或执行失败。
+        """
         spec = self._specs.get(tool_id)
         try:
             result = await self._execute_inner(tool_id, args or {}, ctx, spec)
@@ -224,6 +241,27 @@ class ToolRegistry:
         ctx: ToolContext | None,
         spec: ToolSpec | None,
     ) -> ToolResult:
+        """工具执行流水线：开 span → 校验 → 调用（含重试）→ 校验输出 → 审计。
+
+        关键节点：
+            1. 先开 tool span，任何分支失败都能在观测里看到入参与错误；
+            2. 依次做 enabled / 权限 / 入参校验，校验失败不触达真实工具；
+            3. 调用阶段由 ``_invoke_with_retry`` 处理超时与重试，attempt 落库；
+            4. 输出 schema 校验失败视为工具失败，避免脏数据流入工作流；
+            5. 成功后才写审计，保证审计只记录真实发生的调用。
+
+        Args:
+            tool_id: 工具标识。
+            args: 已确认非 None 的调用入参。
+            ctx: 调用上下文，可为 None。
+            spec: 工具定义；None 表示未注册。
+
+        Returns:
+            成功的 ``ToolResult``。
+
+        Raises:
+            ToolExecutionError: 任一步骤失败时抛出，附带稳定错误码。
+        """
         started = time.perf_counter()
         attempts = 0
         async with _open_tool_span(tool_id, spec.version if spec else None) as span:

@@ -31,6 +31,25 @@ class AuthService:
         ip: str | None = None,
         user_agent: str | None = None,
     ) -> TokenPair:
+        """校验凭证并签发访问/刷新令牌。
+
+        关键节点：
+            1. 账号不存在与密码错误返回同一错误，避免枚举账号；
+            2. 登录成功后才设置租户上下文，后续审计与签发都按该租户收口；
+            3. 审计失败不影响登录结果（由审计服务自行处理）。
+
+        Args:
+            email: 登录邮箱。
+            password: 明文密码，仅用于与 argon2 哈希比对。
+            ip: 客户端 IP，仅审计使用。
+            user_agent: 客户端 User-Agent，仅审计使用。
+
+        Returns:
+            新签发的令牌对。
+
+        Raises:
+            Unauthorized: 账号不存在、被禁用或密码错误。
+        """
         user = await self.session.scalar(
             select(User).where(User.email == email, User.status == "active").limit(1)
         )
@@ -44,6 +63,22 @@ class AuthService:
         return pair
 
     async def refresh(self, refresh_token: str) -> TokenPair:
+        """用刷新令牌换新令牌对。
+
+        关键节点：
+            1. 校验令牌类型必须是 refresh，防止拿 access 令牌续期；
+            2. 用户必须仍存在且 active，且 jti 不在拒绝名单；
+            3. 角色与租户以数据库为准，不信任令牌内嵌的 role。
+
+        Args:
+            refresh_token: 客户端持有的刷新令牌。
+
+        Returns:
+            新签发的令牌对。
+
+        Raises:
+            Unauthorized: 令牌无效、类型错误、用户失效或 jti 已被拒绝。
+        """
         try:
             payload = decode_token(refresh_token)
         except Exception:
