@@ -183,14 +183,30 @@ class WorkflowEngine:
         resume_node_id: str | None = None,
         run_id: int | None = None,
     ) -> EngineResult:
-        """推进运行；终态幂等返回，审批暂停返回 ``waiting_approval``。"""
+        """推进一次工作流运行，是 worker 执行链路的唯一入口。
+
+        关键节点：
+            1. 按 run_id 加锁读取运行，串行化重复投递；
+            2. 用运行所属租户收口其余查询，并保存/恢复观测上下文；
+            3. 终态运行幂等返回，审批暂停返回 ``waiting_approval``。
+
+        Args:
+            resume_node_id: 审批通过后的恢复节点；为空表示从头开始。
+            run_id: 运行主键；为空时使用构造引擎时传入的 id。
+
+        Returns:
+            本次推进后的运行状态、错误与等待节点。
+
+        Raises:
+            ValueError: 构造与调用都没有提供 run_id。
+        """
         resolved = run_id if run_id is not None else self.run_id
         if resolved is None:
             raise ValueError("WorkflowEngine 需要 run_id")
         self.run_id = resolved
 
-        # worker/job 路径唯一允许的无租户读：先拿 run，再据其 tenant 收口其余查询。
-        # 用加锁读串行化重复投递：两条 Celery 任务不能同时开始同一条 trace。
+        # 关键节点 1：worker/job 路径唯一允许的无租户读。先加锁拿 run，
+        # 再据 run.tenant_id 收口其余查询；锁保证重复投递不会并行开 trace。
         run = await self.session.scalar(
             select(WorkflowRun)
             .where(WorkflowRun.id == resolved)
@@ -203,6 +219,8 @@ class WorkflowEngine:
 
         previous_trace = obs_context.current_trace.get()
         previous_span = obs_context.current_span.get()
+        # 关键节点 2：切到运行所属租户；finally 必须恢复租户与观测上下文，
+        # 避免同一个 worker 处理下一条任务时串租户/串 trace。
         token = set_tenant_id(run.tenant_id)
         try:
             return await self._run_inner(run, resume_node_id)
@@ -215,6 +233,25 @@ class WorkflowEngine:
     async def _run_inner(
         self, run: WorkflowRun, resume_node_id: str | None
     ) -> EngineResult:
+        """在校验运行状态后加载版本图，并决定本次从哪些节点开始推进。
+
+        关键节点：
+            1. 终态直接幂等返回；版本图缺失时也要关闭残留 trace；
+            2. ``waiting_approval`` 不再执行，只报告等待中的节点；
+            3. 首次执行 pending → running，且只写一次 ``started_at``；
+            4. 恢复执行从 ``resume_node_id`` 开始，否则从 start 节点开始。
+
+        Args:
+            run: 已加锁读取并切换好租户上下文的工作流运行。
+            resume_node_id: 审批恢复节点；为空时从头开始。
+
+        Returns:
+            本次推进结果；失败时包含错误码。
+
+        Raises:
+            无；引擎内部错误会收敛为 failed 结果。
+        """
+        # 关键节点 1：终态运行不再推进，重复投递必须保持幂等。
         if run.status in RUN_TERMINAL_STATUSES:
             return EngineResult(
                 run_id=run.id, status=run.status, error=run.error
@@ -249,6 +286,7 @@ class WorkflowEngine:
                 error="workflow_version_not_found",
             )
 
+        # 关键节点 2：审批暂停不是终态，本次任务不再推进任何节点。
         if run.status == "waiting_approval":
             waiting = next(
                 (
@@ -270,7 +308,7 @@ class WorkflowEngine:
                 run_id=run.id, status="failed", error=run.error
             )
 
-        # 第一次执行：pending → running，只写一次 started_at。
+        # 关键节点 3：第一次执行只在这里写 started_at，重投不会覆盖原开始时间。
         if run.status == "pending":
             run.status = "running"
             if run.started_at is None:
@@ -278,9 +316,13 @@ class WorkflowEngine:
             run.finished_at = None
             run.error = None
 
+        # 关键节点 4：开启/恢复 trace 后立刻提交 running 状态，
+        # 让 API 侧轮询能尽早看到“运行中”。
         self.trace = self._setup_trace(run)
         await self.session.commit()
 
+        # 关键节点 5：审批恢复只从 resume_node_id 开始，避免重跑已成功节点；
+        # 首次执行从图中唯一的 start 节点开始。
         start_ids = (
             [resume_node_id]
             if isinstance(resume_node_id, str) and resume_node_id
@@ -543,6 +585,28 @@ class WorkflowEngine:
     async def _execute_node(
         self, run: WorkflowRun, node: dict[str, Any], row: WorkflowNodeRun
     ) -> _NodeResult:
+        """按节点类型分派到具体执行器；未知类型直接收敛为节点失败。
+
+        关键节点（节点类型 → 执行语义）：
+            start: 输出运行输入；
+            agent: 调同租户 active Agent，产生 agent span 与 llm_calls；
+            tool: 走工具注册表，产生 tool span 与 tool_calls；
+            condition: 表达式求值，后继边按 when 分流；
+            approval: 暂停运行、释放 worker、保持 trace 开启；
+            end: 透传单前驱输出并结束。
+
+        Args:
+            run: 当前工作流运行。
+            node: DSL 中的节点定义。
+            row: 该节点对应的 ``workflow_node_runs`` 行。
+
+        Returns:
+            节点执行结果；未知类型返回 failed。
+
+        Raises:
+            无；执行器内部异常会转为节点失败结果。
+        """
+        # 关键节点：这里是工作流 DSL 与运行时行为的唯一分派点。
         node_type = node.get("type")
         if node_type == "start":
             return await self._execute_start(run, node, row)
@@ -769,7 +833,26 @@ class WorkflowEngine:
     async def _execute_approval(
         self, run: WorkflowRun, node: dict[str, Any], row: WorkflowNodeRun
     ) -> _NodeResult:
-        # 先抢占租约再写 waiting_approval，避免重复投递把审批状态写两遍。
+        """把审批节点挂起，释放 worker，同时让 trace 保持开启。
+
+        关键节点：
+            1. 先抢占节点租约，避免重复投递把审批状态写两遍；
+            2. run 与 node 都写 ``waiting_approval``，并固化 approvers/expires_at；
+            3. 审批 span 以 ``waiting_approval`` 结束并保存 span_id，
+               供恢复执行时补关，避免终态 trace 残留等待中的 span。
+
+        Args:
+            run: 当前工作流运行。
+            node: DSL 中的 approval 节点定义。
+            row: 该节点对应的节点运行行。
+
+        Returns:
+            状态为 ``waiting_approval`` 的节点结果。
+
+        Raises:
+            无；观测异常会被 ``_safe`` 吞掉，不影响挂起。
+        """
+        # 关键节点 1：先抢占租约再写 waiting_approval，避免重复投递写两遍。
         if not await self._mark_running(row):
             return _NodeResult("busy")
         now = self._now()
@@ -782,6 +865,8 @@ class WorkflowEngine:
         )
         approvers = node.get("approvers") if isinstance(node.get("approvers"), list) else []
 
+        # 关键节点 2：run 与 node 同时进入 waiting_approval，并固化审批元数据；
+        # 提交后 worker 可以释放，恢复时只依赖这些已落库字段。
         row.status = "waiting_approval"
         if row.started_at is None:
             row.started_at = now
@@ -818,6 +903,8 @@ class WorkflowEngine:
             "approval_requested",
             {"approvers": list(approvers), "expires_at": _iso(expires_at)},
         )
+        # 关键节点 3：审批 span 先以 waiting_approval 收尾并落库 span_id；
+        # 批准恢复时由 _close_approval_span 补一次成功关闭。
         _safe(span.finish, "waiting_approval")
         # span_id 必须随节点行落库：恢复执行时依赖它补关审批 span。
         await self.session.commit()
@@ -833,6 +920,27 @@ class WorkflowEngine:
         *,
         tool_id: str | None = None,
     ) -> _NodeResult:
+        """在超时与重试预算内执行单个节点，并维护 attempt 与 heartbeat。
+
+        关键节点：
+            1. 原子抢占租约；失败说明另一 worker 心跳仍新鲜，直接让出；
+            2. 每次尝试独立 span；长节点由独立会话续租，避免被 stale 扫描重投；
+            3. 不可重试的错误立即收敛；可重试错误才累加 attempt 并退避；
+            4. 成功后再次检查取消，取消优先于成功结果落库。
+
+        Args:
+            run: 当前工作流运行。
+            node: DSL 节点定义，读取 ``max_retries`` / ``timeout_ms``。
+            row: 节点运行行，承载 attempt/心跳/终态。
+            attempt_fn: 单次尝试的执行函数，接收本次 span。
+            tool_id: 工具节点传入的 tool_id，用于 span 关联。
+
+        Returns:
+            节点最终结果：succeeded / failed / cancelled / busy。
+
+        Raises:
+            无；异常会被转换为 failed 结果并落库。
+        """
         max_retries = self._max_retries(node)
         total_attempts = max_retries + 1
         timeout_ms = _positive_int(node.get("timeout_ms"), DEFAULT_NODE_TIMEOUT_MS)
@@ -843,6 +951,8 @@ class WorkflowEngine:
             return _NodeResult("busy")
         last: _NodeResult | None = None
 
+        # 关键节点 2：每次尝试使用独立 span；每次循环前重读运行状态，
+        # 取消优先于继续执行，避免取消后仍推进节点。
         for index in range(total_attempts):
             await self._refresh_run(run)
             if run.status == "cancelled":
@@ -892,6 +1002,7 @@ class WorkflowEngine:
             finally:
                 await self._stop_heartbeat(heartbeat)
 
+            # 关键节点 4：成功结果落库前再检查一次取消；取消优先于成功。
             if outcome.status == "succeeded":
                 if await self._cancelled_after_execution(run):
                     return _NodeResult("cancelled")
@@ -910,7 +1021,8 @@ class WorkflowEngine:
             row.heartbeat_at = self._now()
             await self.session.commit()
 
-            # 不可重试的失败立即收敛：不消耗剩余重试次数，也不累加 attempt。
+            # 关键节点 3：不可重试的失败立即收敛：不消耗剩余重试次数，
+            # 也不累加 attempt，直接把节点落成失败。
             if not outcome.retryable:
                 break
 

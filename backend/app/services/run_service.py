@@ -137,10 +137,34 @@ class RunService:
         ip: str | None = None,
         user_agent: str | None = None,
     ) -> RunContext:
+        """创建工作流运行，并在同一事务内落好全部节点行。
+
+        关键节点：
+            1. 只允许已发布且存在已发布版本快照的工作流创建运行；
+            2. run 与 node_run 先以 pending 落库，保证 worker 随时可恢复；
+            3. 审计写入后旁路投递 Celery，broker 故障不能破坏创建响应。
+
+        Args:
+            workflow_id: 当前租户内的工作流主键。
+            input_data: 运行输入，原样写入 ``run.input``；为空表示无输入。
+            trigger_type: 触发方式，``manual`` / ``schedule`` / ``event``。
+            trigger_payload: 触发来源的附加信息，不参与执行。
+            user: 发起人，用于审计；系统触发时可为 None。
+            ip: 发起请求的客户端 IP，仅审计使用。
+            user_agent: 发起请求的 User-Agent，仅审计使用。
+
+        Returns:
+            新建运行的详情上下文，状态固定为 ``pending``。
+
+        Raises:
+            NotFound: 工作流不存在或不属于当前租户。
+            Conflict: 工作流尚未发布，或已发布版本快照缺失。
+        """
         tenant_id = get_tenant_id()
         workflow = await self.repo.get_workflow(tenant_id, workflow_id)
         if workflow is None:
             raise NotFound("工作流不存在")
+        # 关键节点 1：运行只能绑定不可变的已发布版本，避免执行期被草稿改动影响。
         if workflow.status != "published" or workflow.current_version < 1:
             raise Conflict("工作流尚未发布")
 
@@ -150,6 +174,8 @@ class RunService:
         if version is None:
             raise Conflict("工作流已发布版本不存在")
 
+        # 关键节点 2：run 与全部 node_run 在同一事务内以 pending 落库。
+        # worker 可能在任何时刻领取任务，预插节点行让引擎可以幂等推进/恢复。
         run = WorkflowRun(
             tenant_id=tenant_id,
             workflow_version_id=version.id,
@@ -177,6 +203,8 @@ class RunService:
         await self.session.commit()
         await self.session.refresh(run)
 
+        # 关键节点 3：审计落库后再旁路入队；入队失败只告警，
+        # 运行仍保持 pending，由 scheduler 的陈旧扫描重新投递。
         await AuditService.write(
             self.session,
             action="workflow.run",
@@ -273,11 +301,34 @@ class RunService:
         ip: str | None = None,
         user_agent: str | None = None,
     ) -> RunContext:
+        """取消非终态运行，并把未完成节点统一收敛为 ``skipped``。
+
+        关键节点：
+            1. 只允许取消 pending / running / waiting_approval；
+            2. 运行与节点状态在同一事务内收口，避免 worker 看到半截状态；
+            3. 已开启的 trace 以 cancelled 关闭，观测失败不影响取消结果。
+
+        Args:
+            run_id: 运行主键，必须在当前租户内。
+            user: 操作人，用于审计。
+            ip: 请求客户端 IP，仅审计使用。
+            user_agent: 请求 User-Agent，仅审计使用。
+
+        Returns:
+            取消后的运行详情。
+
+        Raises:
+            NotFound: 运行不存在或不属于当前租户。
+            Conflict: 运行已处于终态，无法取消。
+        """
         ctx = await self.detail(run_id)
         run = ctx.run
+        # 关键节点 1：终态运行不可取消，避免覆盖已经写入的结果。
         if run.status not in NON_TERMINAL_STATUSES:
             raise Conflict("运行已结束，无法取消")
 
+        # 关键节点 2：运行与未完成节点在同一事务内收口，
+        # worker 之后重读状态时会立即停止，不会继续推进后继节点。
         previous = run.status
         now = datetime.now(timezone.utc)
         run.status = "cancelled"
@@ -302,6 +353,7 @@ class RunService:
             ip=ip,
             user_agent=user_agent,
         )
+        # 关键节点 3：状态与审计已落库，最后关闭 trace；观测故障静默跳过。
         _close_run_trace(run, "cancelled", name=f"workflow.{ctx.workflow_name}")
         return await self.detail(run_id)
 
@@ -316,12 +368,34 @@ class RunService:
         ip: str | None = None,
         user_agent: str | None = None,
     ) -> RunContext:
-        """批准/拒绝当前等待中的审批节点；角色必须命中节点 approvers。"""
+        """批准或拒绝当前等待中的审批节点。
+
+        关键节点：
+            1. 先锁运行行、再锁等待节点行，串行化并发审批；
+            2. 当前角色必须显式出现在节点 ``approvers`` 中，管理员不隐式通过；
+            3. 批准后以 ``resume_node_id`` 重新入队，拒绝则收口整个运行。
+
+        Args:
+            run_id: 运行主键，必须在当前租户内。
+            approve: True 表示批准，False 表示拒绝。
+            comment: 审批意见；空字符串不会写入审批记录。
+            user: 审批人，角色用于成员资格校验。
+            ip: 审批请求的客户端 IP，仅审计使用。
+            user_agent: 审批请求的 User-Agent，仅审计使用。
+
+        Returns:
+            审批后的运行详情；批准时状态回到 ``running``。
+
+        Raises:
+            NotFound: 运行不存在或不属于当前租户。
+            Conflict: 运行不在 ``waiting_approval`` 状态。
+            Forbidden: 当前角色不在节点 ``approvers`` 列表中。
+        """
         ctx = await self.detail(run_id)
         run = ctx.run
 
-        # 串行化并发审批：先锁运行行，再锁等待中的节点行。后到的事务会因锁
-        # 等待而读到先到者提交后的新状态，于是继续走原有的 409 冲突分支。
+        # 关键节点 1：串行化并发审批。先锁运行行，再锁等待中的节点行；
+        # 后到的事务会读到先到者提交后的新状态，从而走 409 冲突分支。
         locked_run = await self.session.scalar(
             select(WorkflowRun)
             .where(
@@ -354,6 +428,7 @@ class RunService:
         approval = dict(node.approval) if isinstance(node.approval, dict) else {}
         approvers = approval.get("approvers")
         role = getattr(user, "role", None)
+        # 关键节点 2：审批人是角色白名单，管理员不是隐式审批人。
         if not isinstance(approvers, list) or role not in approvers:
             # 管理员不是隐式审批人：必须显式出现在 approvers 里。
             raise Forbidden("当前角色无权审批该节点")
@@ -367,6 +442,8 @@ class RunService:
         node.approval = decided
 
         if approve:
+            # 关键节点 3a：批准后节点成功、运行回到 running，并带 resume_node_id
+            # 重新入队；引擎恢复时补关审批 span，再从后继继续。
             node.status = "succeeded"
             node.output = {"decision": "approved"}
             node.error = None
@@ -400,6 +477,8 @@ class RunService:
                 )
             return await self.detail(run_id)
 
+        # 关键节点 3b：拒绝会收口整个运行，未完成节点统一 skipped，
+        # 并关闭已开启的 trace，避免残留 running 状态。
         node.status = "failed"
         node.error = "approval_rejected"
         node.output = None
