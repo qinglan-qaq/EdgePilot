@@ -1,9 +1,10 @@
-"""Vision Center API（P3 Task 11）：视频上传与失败任务重试。
+"""Vision Center API（P3）：视频上传、失败重试与 Agent 研判。
 
-本批只暴露 T11 的两条路由：``POST /vision/tasks``（multipart 上传）与
-``POST /vision/tasks/{task_uid}/retry``；其余 CRUD/结果/媒体路由由 Task 16
-在同一模块补齐。上传的事务细节都在 ``VisionTaskService``，路由只做表单解析
-与响应包装。
+当前暴露的写路由：``POST /vision/tasks``（multipart 上传）、
+``POST /vision/tasks/{task_uid}/retry``、``POST /vision/tasks/{task_uid}/analyze``
+与 ``POST /vision/events/{event_id}/analyze``；其余 CRUD/结果/媒体路由由 Task 16
+在同一模块补齐。上传的事务细节都在 ``VisionTaskService``、研判在
+``VisionAgentService``，路由只做表单解析与响应包装。
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from app.db import get_db
 from app.models.user import User
 from app.schemas.common import ok
 from app.schemas.vision import VisionTaskOut, VisionZonesIn
+from app.services.vision_agent_service import VisionAgentService
 from app.services.vision_task_service import VisionTaskService
 
 router = APIRouter(prefix="/vision", tags=["vision"])
@@ -111,3 +113,25 @@ async def retry_vision_task(
 ) -> dict:
     task = await VisionTaskService(session).retry(task_uid, user)
     return ok({"task": _task_out(task)})
+
+
+@router.post("/tasks/{task_uid}/analyze")
+async def analyze_vision_task(
+    task_uid: str,
+    user: User = Depends(require_role("admin", "operator")),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """研判任务的最新事件；成功后同一任务复用既有运行行。"""
+    result = await VisionAgentService(session).analyze_task(task_uid, user=user)
+    return ok(result)
+
+
+@router.post("/events/{event_id}/analyze")
+async def analyze_vision_event(
+    event_id: int,
+    user: User = Depends(require_role("admin", "operator")),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """研判指定事件（落到该事件所属任务），复用规则与任务级研判一致。"""
+    result = await VisionAgentService(session).analyze_event(event_id, user=user)
+    return ok(result)

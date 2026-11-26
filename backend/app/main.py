@@ -75,11 +75,14 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         from app.core.config import get_settings
         from app.db import get_session_factory
-        from app.observability import get_tracer, set_writer
+        from app.observability import get_tracer, reset_tracer, set_writer
         from app.observability.live import LiveLayer
         from app.observability.writer import BatchWriter
 
         s = get_settings()
+        # EventCollector 的队列与事件循环强绑定；每个应用生命周期重建一次
+        # tracer，避免同一进程内多次启停（测试/热重载）复用旧循环的队列。
+        reset_tracer()
         set_writer(BatchWriter(get_session_factory(),
                                live=LiveLayer(s.redis_url, s.obs_live_ttl_seconds)))
         await get_tracer().collector.start()
@@ -106,10 +109,31 @@ def create_app() -> FastAPI:
                 logger.exception("节点离线扫描启动失败")
                 sweeper = None
 
+        # Vision 轮询器仅由配置开启；启动/停止失败都不得阻断 API。
+        # 两个依赖都在这里按调用时解析，便于测试 monkeypatch。
+        vision_poller = None
+        if s.vision_enabled:
+            from app.services.vision_client import VisionClient
+            from app.services.vision_sync import VisionSyncPoller
+
+            try:
+                vision_poller = VisionSyncPoller(
+                    get_session_factory(), VisionClient(s), s
+                )
+                await vision_poller.start()
+            except Exception:  # noqa: BLE001 - vision 不得阻断 API 启动
+                logger.exception("Vision 轮询器启动失败，API 继续启动")
+                vision_poller = None
+
         try:
             yield
         finally:
-            # 先停 MQTT/扫描（外部消息入口），再停 tracer 采集，最后才关连接池。
+            # 先停 Vision 轮询（外部推理入口），再停 MQTT/扫描，最后停 tracer 采集。
+            if vision_poller is not None:
+                try:
+                    await vision_poller.stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception("Vision 轮询器停止失败")
             if sweeper is not None:
                 try:
                     await sweeper.stop()
