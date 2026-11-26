@@ -41,6 +41,20 @@ dist/offline/
   为 `false` 时 overlay 文件仍在，但启动观测栈会因镜像缺失失败。
 - 离线包不包含业务源码；数据库迁移通过镜像内的 alembic 执行。
 - 目标机架构必须与构建机一致（当前镜像为 linux/amd64）。
+- **视觉推理镜像** `edgepilot-vision:local`（CPU torch）目前不在
+  `offline_pack.sh` 的 `CORE_IMAGES` 内。需要视觉能力时，在联网构建机先
+  `docker compose -f docker/compose/docker-compose.yml --profile vision build vision`，
+  再单独保存并随包分发：
+
+  ```bash
+  docker save -o dist/offline/vision-image.tar edgepilot-vision:local
+  # 目标机
+  docker load -i vision-image.tar
+  ```
+
+  权重 `yolo11n.pt` 不打进镜像；在构建机用
+  `vision-service/scripts/fetch_model.py` 下载后，把文件随离线包携带（不要提交
+  git）。
 
 ## 2. 目标机校验与导入
 
@@ -117,7 +131,56 @@ tar -xzf web-dist.tar.gz     # 解出 dist/
 `http://api:8000`（或宿主 `127.0.0.1:8000`）。SPA 需要 fallback 到
 `index.html`。
 
-## 7. 可观测栈（可选）
+## 7. 视觉识别（可选 `vision` profile）
+
+前置：`edgepilot-vision:local` 已 `docker load`（见 §1），且权重文件
+`yolo11n.pt` 已随离线包携带。
+
+```bash
+docker compose -f docker/compose/docker-compose.yml \
+  --profile app --profile vision up -d
+```
+
+**离线复制权重（推荐）**：把权重复制进运行中的容器，然后必须 reload：
+
+```bash
+docker compose -f docker/compose/docker-compose.yml cp \
+  /path/to/yolo11n.pt vision:/app/weights/yolo11n.pt
+docker compose -f docker/compose/docker-compose.yml exec vision \
+  ls -l /app/weights/yolo11n.pt
+curl -X POST -H "X-Vision-Token: $VISION_SERVICE_TOKEN" \
+  http://127.0.0.1:8001/v1/models/reload
+```
+
+顺序固定为 **copy → reload → verify**：只复制不 reload 时，`/health` 仍报
+`degraded`/`load_error`，新任务会失败并写 `model_unavailable`。
+
+**有网环境也可让容器自行下载**（无需 `docker compose cp`）：
+
+```bash
+docker compose -f docker/compose/docker-compose.yml exec vision \
+  python scripts/fetch_model.py
+curl -X POST -H "X-Vision-Token: $VISION_SERVICE_TOKEN" \
+  http://127.0.0.1:8001/v1/models/reload
+```
+
+验证：
+
+```bash
+curl -fsS http://127.0.0.1:8001/health
+# 期望 status=ok、model.load_status=ready、storage.writable=true
+
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8000/api/v1/vision/health
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8000/api/v1/vision/models
+```
+
+`/health` 返回 200 但 `status=degraded` 表示权重未加载；`/vision/health` 的
+`reachable=false` 表示后端没连上推理服务。视频、artifact 与作业状态都在
+`vision_data` 卷，权重在 `vision_weights` 卷；升级/回滚前一并备份。
+
+## 8. 可观测栈（可选）
 
 仅当 `manifest.json` 的 `observability_images=true`：
 
@@ -131,7 +194,7 @@ docker compose -f docker/compose/docker-compose.yml \
 - Grafana 首次登录 `admin` / `GRAFANA_ADMIN_PASSWORD`
 - 看板 `EdgePilot Overview` 自动加载
 
-## 8. 初始化演示数据（可选）
+## 9. 初始化演示数据（可选）
 
 离线包没有 seed 脚本；需要演示账号/数据时，从仓库另行拷贝
 `backend/scripts/` 与 Python 环境，或提前在构建机执行后备份数据库。若目标机
@@ -142,7 +205,7 @@ docker compose -f docker/compose/docker-compose.yml exec -T postgres \
   pg_restore -U edgepilot -d edgepilot --clean --if-exists < backup.dump
 ```
 
-## 9. 数据保留
+## 10. 数据保留
 
 镜像内置 `/app/scripts/retention.py`：
 
@@ -157,18 +220,20 @@ docker compose -f docker/compose/docker-compose.yml --profile app exec api \
 
 Git Bash 下如果路径被 MSYS 改写，命令前加 `MSYS_NO_PATHCONV=1`。
 
-## 10. 验收清单
+## 11. 验收清单
 
 - [ ] `sha256sum -c SHA256SUMS` 全部 OK
 - [ ] `docker load` 成功，镜像 tag 与 `manifest.json` 一致
-- [ ] `alembic current` 到达 `0005_obs_analytics_indexes`
+- [ ] `alembic current` 到达 `0006_vision`
 - [ ] `/health` 返回 200，`/metrics` 返回 Prometheus 文本
 - [ ] 前端能登录，Dashboard 有计数
 - [ ] 触发一次工作流运行，Trace Detail 可见 span 树
 - [ ] 观测 profile 下 Prometheus target UP，Grafana 看板有数据
 - [ ] retention dry-run 行数与预期一致
+- [ ] （可选 vision）`http://127.0.0.1:8001/health` 为 `ok`、`model.load_status=ready`
+- [ ] （可选 vision）`GET /api/v1/vision/health` 的 `reachable=true`，上传一次真实视频可完成并播放目标框
 
-## 11. 升级与回滚
+## 12. 升级与回滚
 
 升级：
 
@@ -184,7 +249,7 @@ Git Bash 下如果路径被 MSYS 改写，命令前加 `MSYS_NO_PATHCONV=1`。
 2. `docker load` 旧镜像，恢复数据库备份。
 3. 不要对已升级的库直接 `alembic downgrade` 跨多个版本；优先恢复备份。
 
-## 12. 常见问题
+## 13. 常见问题
 
 | 现象 | 处理 |
 |---|---|

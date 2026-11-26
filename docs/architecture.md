@@ -1,8 +1,10 @@
 # EdgePilot 架构说明
 
-本文描述 P0–P7 交付版本的实际结构。目标是把「摄像头/设备 → 视觉事件 → 多 Agent
-研判 → 审批与报告 → 可观测追踪」做成一条可配置、可下发、可离线部署的链路，同时
-保证观测链路故障不影响业务执行。
+本文描述 P0–P7 + Vision Center 交付版本的实际结构。目标是把「摄像头/设备 →
+视觉事件 → 多 Agent 研判 → 审批与报告 → 可观测追踪」做成一条可配置、可下发、
+可离线部署的链路，同时保证观测链路故障不影响业务执行。Vision Center 使用独立
+`vision-service` 做预训练 YOLO11n 真实推理，默认 CPU，GPU 不是运行前提；
+不训练、不导出。
 
 ## 1. 系统上下文
 
@@ -21,6 +23,12 @@ flowchart LR
         PG[(PostgreSQL 16 + pgvector :5433)]
         Redis[(Redis 6379)]
         MQ[(RabbitMQ 5672)]
+    end
+
+    subgraph Vision[视觉推理（vision profile）]
+        VS[vision-service :8001]
+        VData[(vision_data\n/data/vision)]
+        VW[(vision_weights\n/app/weights)]
     end
 
     subgraph UI[前端]
@@ -42,6 +50,10 @@ flowchart LR
     Worker --> PG
     Beat --> Worker
     Web -- /api/v1 --> API
+    API -- 内网 HTTP + X-Vision-Token --> VS
+    VS --> VData
+    VS --> VW
+    API --> VData
     Prom -- 抓取 /metrics --> API
     Grafana --> Prom
 ```
@@ -57,6 +69,7 @@ flowchart LR
 | redis | 6379 | 设备去重、令牌拒绝列表、Trace 实时状态 |
 | rabbitmq | 5672 / 15672 | Celery broker |
 | mosquitto | 1883 | 边缘上行与下行指令 |
+| vision-service | 8001（仅 `127.0.0.1`） | YOLO11n CPU 推理、作业状态、结果 artifact；`vision` profile |
 | prometheus | 9090 | `observability` profile |
 | grafana | 3000 | `observability` profile，预置总览看板 |
 
@@ -135,7 +148,18 @@ flowchart LR
 - 观测写入失败只记录告警并丢弃本批，不向业务调用方抛异常；连续失败会降级到
   `METADATA` 并暴露指标。
 
-### 3.4 LLM、工具与 RAG 埋点
+### 3.4 视觉推理任务
+
+1. 浏览器 `POST /vision/tasks` 上传视频；backend 做后缀/魔数/大小校验并计算
+   SHA-256，写 `vision_tasks`，视频落共享卷 `vision_data`。
+2. backend 以 JSON（共享卷路径、哈希、置信度、采样参数）调用
+   `vision-service POST /v1/jobs`；服务异步执行，状态写 `/data/vision/jobs/`。
+3. API 进程内的轮询器默认每 2s 对账；远端 `completed` 后按「结果 → 事件 →
+   `completed`」顺序提交，存在事件且联动开关开启时按配置的工作流名触发运行。
+4. 帧级框存 JSON artifact，DB 只存汇总与指针；视频通过签名 URL + Range 播放。
+5. 推理任务本身不建 Trace；Agent 研判与工作流运行沿用现有 Tracer。
+
+### 3.5 LLM、工具与 RAG 埋点
 
 - LLM：`LLMClient` 记录 provider/model、token usage、耗时、finish reason；
   provider 未返回 usage/单价时 `usage`/`cost` 为 `NULL`，绝不用估算值填充。
@@ -170,6 +194,8 @@ flowchart LR
 
 1. **开发栈**：`docker/compose/docker-compose.yml`，`app` profile；
    前端 Vite dev server 代理 `/api` 到 `127.0.0.1:8000`。
+   视觉推理单独使用 `vision` profile，只暴露 `127.0.0.1:8001`；api 不依赖它，
+   未启动时 `/vision/*` 返回可解释的不可达状态，其余模块不受影响。
 2. **可观测栈**：叠加 `docker-compose.observability.yml`，`observability`
    profile；Prometheus 抓取 `api:8000/metrics`，Grafana 自动加载看板。
 3. **离线包**：`scripts/offline_pack.sh` 产出镜像 tar、前端 dist、compose
@@ -179,7 +205,10 @@ flowchart LR
 ## 7. 明确的非目标与后续
 
 - 本期不做 Replay 与评测闭环（P8）：实验管理、LLM judge、数据标注不在仓库中。
-- 不做 YOLO 真实推理、GPU torch、K8s 多节点调度；视觉能力以规则与模拟事件
-  为主，报告必须遵守“无证据不下结论”。
+- 视觉只做**预训练 YOLO11n** CPU 推理：不做训练/微调/自定义数据集，
+  不做 TensorRT / ONNX 导出，不把 GPU 作为运行前提；不做目标跟踪；
+  不做 K8s 多节点调度。推理失败返回明确失败原因，不使用 Mock 或模拟结果兜底。
+- MQTT 演示事件仍显式标记 `simulated=true`，与真实推理结果分开，不能互相替代；
+  报告必须遵守“无证据不下结论”。
 - 不引入 OpenTelemetry SDK/Collector；仅对齐 traceparent 与语义字段，减少
   离线部署体积。

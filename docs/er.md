@@ -2,10 +2,10 @@
 
 ## 1. 建模约定
 
-- 当前库 25 张业务/观测表：业务域 16 张、可观测域 9 张；Alembic 版本表
-  `alembic_version` 不计入。
-- 规划中的第 26 张表 `evaluation_records` 属于 P8（迁移 `0006_evaluation`），
-  本期不做评测闭环，因此库内不存在该表。16 + 10 的口径不变，差的一张即 P8 表。
+- 当前库 28 张业务/观测表：业务域 19 张（其中 Vision 新增 3 张）、可观测域 9 张；
+  Alembic 版本表 `alembic_version` 不计入。
+- 规划中的评测表 `evaluation_records` 属于 P8，本期不做评测闭环，因此库内
+  不存在该表。28 张的统计口径不含 P8 表。
 - **不建跨表外键**：关联列（`agent_id`、`workflow_run_id`、`trace_id`、
   `span_id` 等）由应用层维护，删除/归档由 service 负责。这样便于离线迁移、
   分库与演示数据重建，也避免级联删除误伤审计与观测数据。
@@ -40,11 +40,13 @@ erDiagram
     edge_nodes ||--o{ devices : "node_id"
     edge_nodes ||--o{ vision_events : "node_id"
     devices ||--o{ vision_events : "device_id"
+    vision_tasks ||--o| vision_results : "task_id"
+    vision_tasks ||--o{ vision_events : "payload.task_uid"
 ```
 
 > 图中的连线是逻辑关联，数据库中没有对应外键约束。
 
-## 3. 业务域（16 张）
+## 3. 业务域（19 张，其中 Vision 新增 3 张）
 
 | 表 | 用途 | 关键约束/索引 |
 |---|---|---|
@@ -62,6 +64,9 @@ erDiagram
 | `devices` | 设备/相机 | `(tenant_id)` |
 | `edge_nodes` | 边缘节点、心跳与指标 | `uq_edge_nodes_tenant_node_key` |
 | `vision_events` | 视觉事件与去重 | `uq_vision_events_tenant_dedup`、时间倒序索引 |
+| `vision_tasks` | 视频识别任务汇总；帧级结果不入库 | `uq_vision_tasks_tenant_uid`、`uq_vision_tasks_tenant_dedup`、租户+时间/状态/模型索引 |
+| `vision_results` | 任务结果汇总与 artifact 指针 | `uq_vision_results_tenant_task`、租户+时间索引 |
+| `vision_models` | 模型元数据与许可提示；不存权重 | `uq_vision_models_tenant_key` |
 | `knowledge_chunks` | 知识分块、pgvector 与全文索引 | `uq_knowledge_chunks_doc_chunk`、HNSW/GIN |
 | `audit_logs` | 审计日志（含 trace_id） | `(tenant_id, created_at)`、资源索引 |
 
@@ -76,6 +81,22 @@ erDiagram
   端到端延迟基准用它计算。`dedup_key` 唯一，重复上报不会重复计数。
 - `knowledge_chunks.embedding` 可空：未配置 embedding 时仍可用 pg_trgm 与
   全文检索，不伪造向量。
+- `vision_tasks` 只保存任务汇总（状态、进度、视频哈希/尺寸/时长、模型与错误码）；
+  `dedup_key` 由租户 + 视频 SHA-256 + 模型/参数/区域规范化后计算，
+  `uq_vision_tasks_tenant_dedup` 保证同文件同参数只建一个任务。
+- `vision_results` 与任务一一对应（`uq_vision_results_tenant_task`）；帧级结果存
+  `jobs/<task_uid>/result.json`。`artifact_file_sha256`（文件字节）与
+  `result_sha256`（canonical JSON）语义不同，均用于防篡改。
+- `vision_events.dedup_key` 对视觉任务为
+  `vision:{task_uid}:{event_type}:{frame_id}:{class_id}[:zone:{zone_id}]`，
+  由 `uq_vision_events_tenant_dedup` 兜底，重放不会重复计数。
+- `vision_models` 只登记元数据与许可；模型为 AGPL-3.0，两条授权路径为遵守
+  AGPL 义务或购买 Ultralytics Enterprise License，`commercial_use_notice`
+  固定写明“不默认授予商业使用权限”；`weights_sha256` 缺失时
+  `model_version` 回退为 `yolo11n`，不伪造哈希。
+- `workflow_runs` 增加部分唯一索引 `uq_workflow_runs_vision_task`：
+  `(trigger_payload->>'vision_task_uid')` 在 `trigger_type='event'` 且非空时唯一，
+  保证一个视觉任务最多触发一条工作流运行。
 
 ## 4. 可观测域（9 张）
 
@@ -114,6 +135,7 @@ erDiagram
 | `0003_obs_llm_tool_prompt` | llm_calls / tool_calls / prompt_* |
 | `0004_obs_retrieval` | retrieval_records 与 RAG 索引 |
 | `0005_obs_analytics_indexes` | Analytics 聚合所需索引 |
+| `0006_vision` | `vision_tasks` / `vision_results` / `vision_models` 三表与索引，外加 `uq_workflow_runs_vision_task` 部分唯一索引 |
 
 ```bash
 cd backend
@@ -127,3 +149,14 @@ python -m alembic current
 业务事件 90 天、观测 180 天、审计 365 天（可用 CLI 参数覆盖）。默认
 `--dry-run`；`--execute` 才写库。`vision_events` 分批删除（默认 1000/批）
 并清理截图文件，路径越界只告警不删文件。
+
+Vision Center 另用 `scripts/vision_cleanup.py`（默认 90 天，
+`VISION_RESULT_RETENTION_DAYS` 可覆盖）：
+
+- 默认只删除过期终态任务的视频与 `jobs/<task_uid>/` 目录；`vision_tasks` 汇总行
+  保留（`completed` 不会因清理变成 `failed`），`vision_results` 行保留、仅把
+  `artifact_path` 置空并写 `purged_at`。
+- `--purge-db --confirm` 才会删除 `vision_results` 行，并把任务标为
+  `failed`、`error_code="purged"`（不新增状态值）。
+- 每个任务写一条审计 `action="vision.cleanup"`，`detail` 含
+  `actor/task_uid/deleted_files/dry_run/purge_db`。

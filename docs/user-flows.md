@@ -3,8 +3,9 @@
 本文按“一个用户从打开浏览器到看到一条 Trace”的真实操作顺序讲清楚每个链条：
 页面做什么、调用了哪个接口、后端落到哪张表、失败时如何表现。
 
-适用版本：P0–P7（v2 可观测中心）。第 26 张评测表与回放属于 P8，不在本期。
-所有页面只展示接口真实返回值；缺数据时显示“未上报”，不生成模拟数据。
+适用版本：P0–P7 + Vision Center（真实 YOLO11n 推理）。评测表与回放属于 P8，
+不在本期。所有页面只展示接口真实返回值；缺数据时显示“未上报”，不生成模拟数据
+（视觉框来自真实推理，不使用 Mock 检测兜底）。
 
 ---
 
@@ -43,6 +44,11 @@
 | `/observability/prompts` | 提示词 | 已实现 | `observability/prompts` 系列 |
 | `/observability/prompts/playground` | Prompt Playground | 已实现 | `prompts/{id}/playground` |
 | `/observability/settings` | 可观测设置 | 已实现（只读） | `GET /observability/settings` |
+| `/vision` | 视觉总览 | 已实现 | `GET /vision/overview`、`GET /vision/health` |
+| `/vision/detect` | 视频识别 | 已实现 | `POST /vision/tasks`、`GET /vision/tasks/{uid}`（轮询） |
+| `/vision/records` | 识别记录 | 已实现 | `GET /vision/tasks` |
+| `/vision/records/:taskUid` | 任务详情 | 已实现 | `GET /vision/tasks/{uid}`、`results`、`events`、`cancel`、`retry`、`analyze`、签名 `video` |
+| `/vision/models` | 模型管理 | 已实现 | `GET /vision/models`、`GET /vision/health`（许可与实时状态） |
 
 ### 0.3 分层与请求路径
 
@@ -51,8 +57,9 @@ flowchart LR
   B["浏览器 Vue 3 页面"] -->|"axios /api/v1（Bearer）"| A["FastAPI 路由"]
   A --> S["Service 业务层"]
   S --> R["Repository 数据层"]
-  R --> PG[("PostgreSQL 25 张表")]
+  R --> PG[("PostgreSQL 28 张表")]
   A --> RD[("Redis 实时层/令牌")]
+  A -->|"HTTP + X-Vision-Token"| VS["vision-service :8001"]
   S --> MQ[("RabbitMQ q.workflow")]
   MQ --> W["Celery Worker"]
   W --> S2["工作流引擎/Agent/工具"]
@@ -726,7 +733,88 @@ flowchart LR
 
 ---
 
-## 15. 占位模块与能力边界
+## 15. 视觉识别 `/vision/*`
+
+### 15.1 从上传到研判的完整链路
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as operator/admin
+  participant FE as 前端
+  participant API as API
+  participant SYNC as 后端轮询器
+  participant VS as vision-service
+  participant PG as PG
+  participant WF as 工作流/Agent
+  U->>FE: 选择视频，设置置信度/采样/区域
+  FE->>API: POST /vision/tasks（multipart）
+  API->>PG: 写入 vision_tasks(pending) + 视频 SHA-256
+  API->>VS: POST /v1/jobs（共享卷路径 + 参数）
+  VS-->>API: 202 已受理
+  FE->>API: 每 2s GET /vision/tasks/{uid}
+  API-->>FE: 状态 + progress（不返回帧数组）
+  SYNC->>VS: 每 2s GET /v1/jobs/{uid}
+  VS-->>SYNC: running/completed
+  SYNC->>VS: completed 后 GET /v1/jobs/{uid}/results
+  SYNC->>PG: 先写结果 → 再写事件 → 最后置 completed
+  SYNC->>WF: 有事件且配置命中时自动触发研判工作流
+  U->>FE: 打开任务详情，播放视频
+  FE->>API: GET results（limit=2000）+ 签名 video URL
+  API-->>FE: 帧级框 + 206 Range 视频流
+  U->>FE: 点击“Agent 研判”
+  FE->>API: POST /vision/tasks/{uid}/analyze
+  API->>WF: 运行租户内启用的 vision Agent
+  FE-->>U: 展示结论 + workflow_run_id + agent_trace_id
+```
+
+关键事实：
+
+- **请求路径**：浏览器只与 backend 通信；backend 把视频落在共享存储卷，
+  再以 JSON（路径、SHA-256、参数）调用 vision-service 的 `/v1/jobs`。
+  浏览器不直接访问 8001。
+- **完成顺序**：结果、事件、`completed` 三段提交；事件写入失败不会把任务
+  回退成失败，只是没有事件。前端看到 `completed` 时结果通常已可读。
+- **前端轮询**：`setTimeout` 递归，正常间隔 2s；请求失败时退避
+  4s → 8s → 16s → 30s 封顶，成功立即回到 2s；到达 `completed`/`failed`/
+  `cancelled` 后停止。离开页面会主动停表。
+- **播放**：详情里的视频地址是带签名 token 的 URL（有效期 1 小时），
+  `<video>` 请求不需要 Bearer；服务端支持 `Range`（206/416），拖动进度条
+  不会整段重下。框坐标是视频像素坐标，由播放器按实际显示尺寸缩放。
+- **事件与联动**：事件由真实检测结果生成（当前仅对 `person`；默认置信度
+  ≥ 0.6、同类别/同区域冷却 5s），去重键为
+  `vision:{task_uid}:{event_type}:{frame_id}:{class_id}`
+  （区域事件追加 `:zone:{zone_id}`）。任务完成、存在事件且
+  `VISION_TRIGGER_ENABLED=true` 时，会按配置的工作流名查找
+  已发布工作流并自动创建 `trigger_type='event'` 的运行；同一任务最多一条，
+  由部分唯一索引 `uq_workflow_runs_vision_task` 兜底。结果行回写
+  `trigger_status`/`workflow_run_id`。
+- **Agent 研判**：`analyze` 取该任务最新事件，调用租户内第一个启用的
+  `vision` Agent，回写 `agent_status`、`agent_run_id`、`agent_trace_id`。
+  成功后再点会复用同一次运行，不会重复计费。无事件（409
+  `no_vision_events`）或租户内没有可用视觉 Agent（409
+  `vision_agent_missing`）时接口明确拒绝，不做假结论。
+- **权限**：读取（概览、列表、详情、结果、事件、模型、健康）任意登录角色；
+  上传、取消、重试、触发、研判限 `admin`/`operator`。所有查询带租户，
+  跨租户一律 404。
+
+### 15.2 页面职责
+
+| 页面 | 主要行为 |
+|---|---|
+| `/vision` | 任务计数、帧/检测/事件总量、最近任务；模型卡展示许可与运行状态 |
+| `/vision/detect` | 上传、置信度、自动/固定采样、区域 JSON；成功后进入进度轮询 |
+| `/vision/records` | 按状态/关键字/时间筛选历史任务 |
+| `/vision/records/:taskUid` | 播放与框选、目标列表、事件列表、取消/重试/触发/研判、运行与 Trace 链接 |
+| `/vision/models` | DB 登记项与推理服务实时项对照；权重缺失/未加载直接显示 |
+
+vision-service 未启动时，上传会落 `failed(vision_service_unavailable)`，
+已有任务仍可查询；`/vision/health` 的 `reachable=false` 不代表 EdgePilot
+不可用，其余模块不受影响。
+
+---
+
+## 16. 占位模块与能力边界
 
 | 模块 | 现状 | 说明 |
 |---|---|---|
@@ -735,16 +823,16 @@ flowchart LR
 | 节点/设备/事件/知识库 | 占位 | 各自查询/操作接口已实现 |
 | 系统设置 `/settings` | 占位 | 用户与审计接口已实现 |
 | Trace 实时推送 | 后端已实现 | SSE 端点可用；前端本期未接，详情用拉取、运行用 3 秒轮询 |
-| 回放 / 评测闭环 | P8 | 第 26 张表 `evaluation_records` 与回放不在本期 |
+| 回放 / 评测闭环 | P8 | `evaluation_records` 等 P8 表与回放不在本期 |
 | 大包体积 | 已知 | 前端主 chunk 约 1.6 MB，构建有体积告警 |
 
 占位页明确写明“不展示模拟统计、模拟列表或占位图表”，这是刻意的诚实边界。
 
 ---
 
-## 16. 三个典型端到端场景
+## 17. 三个典型端到端场景
 
-### 16.1 从零到一条可观测 Trace
+### 17.1 从零到一条可观测 Trace
 
 ```mermaid
 sequenceDiagram
@@ -775,7 +863,7 @@ sequenceDiagram
   FE-->>U: 三栏 + 10 个 Tab
 ```
 
-### 16.2 审批型流程
+### 17.2 审批型流程
 
 ```mermaid
 sequenceDiagram
@@ -795,7 +883,7 @@ sequenceDiagram
   U->>FE: 打开 Trace，看到 approval span 与事件
 ```
 
-### 16.3 Prompt 优化闭环
+### 17.3 Prompt 优化闭环
 
 ```mermaid
 flowchart LR
@@ -814,9 +902,9 @@ flowchart LR
 
 ---
 
-## 17. 横切机制与排错索引
+## 18. 横切机制与排错索引
 
-### 17.1 统一约定
+### 18.1 统一约定
 
 - **响应信封**：`{code, message, data, trace_id}`；`code=0` 成功。
 - **错误展示**：页面只展示后端 `message`，不把 axios/堆栈细节暴露给用户。
@@ -825,7 +913,7 @@ flowchart LR
 - **租户隔离**：所有查询强制租户；跨租户返回 404，不泄露“存在但无权”。
 - **观测是旁路**：任何采集/写入/推送失败都不影响业务执行。
 
-### 17.2 症状 → 先看哪里
+### 18.2 症状 → 先看哪里
 
 | 症状 | 先检查 |
 |---|---|
@@ -842,7 +930,7 @@ flowchart LR
 
 ---
 
-## 18. 页面 → 接口速查
+## 19. 页面 → 接口速查
 
 | 页面 | 主要请求 |
 |---|---|
@@ -860,5 +948,11 @@ flowchart LR
 | 提示词 | `GET/POST /observability/prompts`、`GET /{id}`、`GET /{id}/executions`、`POST /{id}/versions`、`POST /publish`、`POST /rollback` |
 | Playground | `POST /observability/prompts/{id}/playground` |
 | 可观测设置 | `GET /observability/settings` |
+| 视觉总览 | `GET /vision/overview`、`GET /vision/health`、`GET /vision/models` |
+| 视频识别 | `POST /vision/tasks`（multipart）、`GET /vision/tasks/{uid}` |
+| 识别记录 | `GET /vision/tasks?status&q&start&end` |
+| 任务详情 | `GET /vision/tasks/{uid}`、`/results`、`/events`、签名 `/video`；`POST /cancel`、`/retry`、`/trigger`、`/analyze` |
 
-所有接口都以 `/api/v1` 为前缀，均需 Bearer 令牌；权限按上表与角色矩阵执行。
+所有接口都以 `/api/v1` 为前缀；除签名视频 URL 外均需 Bearer 令牌
+（签名 URL 自带租户+任务+视频哈希校验，供 `<video>` 直接请求）。
+权限按上表与角色矩阵执行。
