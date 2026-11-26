@@ -40,6 +40,8 @@ class VisionTaskOut(BaseModel):
     task_uid: str
     status: str
     progress: int = 0
+    # 派发/重试次数：retry 端点在响应里回显，前端据此展示重试余量。
+    dispatch_attempts: int = 0
     video_filename: str
     file_size_bytes: int
     conf_threshold: float

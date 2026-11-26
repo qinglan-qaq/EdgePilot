@@ -12,6 +12,7 @@ from app.api.v1.nodes import router as nodes_router
 from app.api.v1.runs import router as runs_router
 from app.api.v1.tools import router as tools_router
 from app.api.v1.users import router as users_router
+from app.api.v1.vision import router as vision_router
 from app.api.v1.workflows import router as workflows_router
 from app.observability.api.analytics import router as analytics_router
 from app.observability.api.prompts import router as prompts_router
@@ -32,6 +33,7 @@ api_router.include_router(events_router)
 api_router.include_router(workflows_router)
 api_router.include_router(runs_router)
 api_router.include_router(knowledge_router)
+api_router.include_router(vision_router)
 api_router.include_router(observability_router)
 api_router.include_router(analytics_router)
 api_router.include_router(prompts_router)
