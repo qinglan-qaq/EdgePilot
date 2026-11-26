@@ -46,3 +46,6 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+# Vision 模型权重（体积大，由 scripts/fetch_model.py 下载并校验 SHA-256）
+vision-service/weights/*.pt

@@ -1,0 +1,24 @@
+[project]
+name = "edgepilot-vision"
+version = "0.1.0"
+description = "EdgePilot Vision Center inference service (YOLO11n, CPU)"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0" }
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "pydantic>=2",
+  "numpy>=1.26",
+  "opencv-python-headless>=4.10",
+  "ultralytics>=8.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

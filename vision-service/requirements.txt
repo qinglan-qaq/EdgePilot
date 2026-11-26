@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2
+numpy>=1.26
+opencv-python-headless>=4.10
+ultralytics>=8.3
+# CPU-only torch is installed separately, see README / docker/vision.Dockerfile:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
