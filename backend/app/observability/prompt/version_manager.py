@@ -173,7 +173,24 @@ async def _assert_version_exists(
 async def publish(
     session: AsyncSession, template_pk: int, version: int
 ) -> PromptTemplate:
-    """发布 = 把 active_version 指向已存在的版本，不改任何版本内容。"""
+    """发布 = 把 active_version 指向已存在的版本，不改任何版本内容。
+
+    关键节点：
+        1. 版本内容不可变：这里只更新模板指针，绝不写 prompt_versions；
+        2. 目标版本必须存在且属于当前租户，否则 404；
+        3. 提交后刷新模板，返回的 active_version 即最新发布结果。
+
+    Args:
+        session: 当前请求的数据库会话。
+        template_pk: 模板主键。
+        version: 要发布的版本号（必须已存在）。
+
+    Returns:
+        更新后的模板行。
+
+    Raises:
+        NotFound: 模板或目标版本不存在（含跨租户）。
+    """
     tenant_id = get_tenant_id()
     template = await get_template(session, template_pk)
     await _assert_version_exists(session, tenant_id, template_pk, version)
@@ -194,7 +211,19 @@ async def publish(
 async def rollback(
     session: AsyncSession, template_pk: int, version: int
 ) -> PromptTemplate:
-    """回滚语义与发布相同：只改 active_version。"""
+    """回滚语义与发布相同：只改 active_version，历史版本保持不变。
+
+    Args:
+        session: 当前请求的数据库会话。
+        template_pk: 模板主键。
+        version: 要回滚到的历史版本号。
+
+    Returns:
+        更新后的模板行。
+
+    Raises:
+        NotFound: 模板或目标版本不存在（含跨租户）。
+    """
     return await publish(session, template_pk, version)
 
 

@@ -74,8 +74,22 @@ def resolve_window(
 ) -> AnalyticsWindow:
     """补全默认窗口并决定趋势粒度。
 
-    默认最近 24 小时（UTC）；只给 ``start_to`` 时向前推 24 小时，只给
-    ``start_from`` 时结束于当前时间。窗口 <= 72 小时按小时分桶，否则按天。
+    关键节点：
+        1. 默认最近 24 小时（UTC）；只给 ``start_to`` 时向前推 24 小时，
+           只给 ``start_from`` 时结束于当前时间；
+        2. 统一转成 UTC，避免跨时区聚合出错；
+        3. 窗口 <= 72 小时按小时分桶，否则按天分桶，控制返回点数。
+
+    Args:
+        start_from: 窗口起点，可为空。
+        start_to: 窗口终点，可为空。
+        now: 当前时间，测试注入用；为空时取系统 UTC 时间。
+
+    Returns:
+        规范化后的 ``AnalyticsWindow``，含 start_from / start_to / bucket。
+
+    Raises:
+        ValueError: ``start_from`` 晚于 ``start_to``。
     """
     end = _as_utc(start_to) if start_to is not None else _as_utc(
         now or datetime.now(timezone.utc)

@@ -28,6 +28,19 @@ SLOW_TRACE_THRESHOLD_MS = 3000.0
 
 
 def build_tree(spans: list[dict]) -> list[dict]:
+    """把扁平的 span 列表拼成前端可渲染的树。
+
+    关键节点：
+        1. 以 span_id 建索引，parent 存在则挂到父节点，否则作为根；
+        2. parent 指向不存在的 span 时标记 ``orphan``，前端据此提示断链；
+        3. 兄弟节点按 start_time + span_id 排序，保证同一 trace 渲染稳定。
+
+    Args:
+        spans: 同一 trace 下的 span 字典列表，需含 span_id / parent_span_id。
+
+    Returns:
+        根节点列表，每个节点带 ``children`` 与 ``orphan`` 标记。
+    """
     nodes = {s["span_id"]: {**s, "children": [], "orphan": False} for s in spans}
     roots: list[dict] = []
     for node in nodes.values():

@@ -219,12 +219,27 @@ async def playground(
 ) -> dict:
     """渲染预览；``execute=True`` 时真实调用 LLM 并记录本次 Prompt 执行。
 
-    - 预览本身没有 trace/span，因此不写 prompt_executions。
-    - ``execute=True`` 需要 admin/operator；渲染失败（schema/render）属于用户
-      错误，直接返回预览 + ``response=None``，不调用 LLM、不写执行记录。
-    - 真实执行开一条 ``source="playground"`` 的 trace，当前 span 记录 prompt
-      元信息；LLMClient 自己把 LLMCallRecord 挂到该 span（不写 agent_runs）。
-    - LLM 超时/错误仍返回 200 + ``status="llm_error"``，只有鉴权/404/422 非 200。
+    关键节点：
+        1. 预览只渲染、不调用模型，因此没有 trace/span，也不写 prompt_executions；
+        2. 真实执行要求 admin/operator；渲染失败属于用户输入问题，直接返回
+           预览结果且 ``response=None``，不触达 LLM、不产生执行记录；
+        3. 真实执行开启 ``source="playground"`` 的 trace，当前 prompt span
+           承接 LLMClient 写入的 llm_calls；
+        4. LLM 超时/错误仍返回 200 + ``status="llm_error"``，
+           只有鉴权/404/422 这类请求本身的问题才返回非 200。
+
+    Args:
+        template_pk: Prompt 模板主键。
+        payload: 包含版本、变量、模型配置与是否执行的请求体。
+        user: 当前登录用户，决定是否允许真实执行。
+        session: 当前请求的数据库会话。
+
+    Returns:
+        统一响应：渲染结果、prompt_hash，执行时附加 trace/span/response。
+
+    Raises:
+        NotFound: 模板或指定版本不存在（或不属于当前租户）。
+        Forbidden: ``execute=True`` 但角色不是 admin/operator。
     """
     version_row = await _resolve_playground_version(session, template_pk, payload.version)
 

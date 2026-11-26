@@ -115,9 +115,24 @@ def _llm_output(response: Any) -> dict | None:
 
 
 class LangGraphCallback(BaseCallbackHandler):
-    """把 LangGraph 的 callback 事件转成 EdgePilot 观测记录。"""
+    """把 LangGraph 的 callback 事件转成 EdgePilot 观测记录。
+
+    关键节点：
+        1. 首次 chain_start 若没有外层 trace，则由回调自己开启 trace；
+        2. chain → workflow/node span，llm → llm span + llm_calls，
+           tool → tool span + tool_calls；
+        3. 所有回调外层都 try/except，观测失败绝不打断图执行；
+        4. interrupt/resume 以事件形式挂到当前 span，供审批恢复链路排障。
+    """
 
     def __init__(self, tracer: Any | None = None) -> None:
+        """初始化回调，并尽力获取全局 tracer。
+
+        关键节点：tracer 初始化失败只关闭观测，不阻止 LangGraph 运行。
+
+        Args:
+            tracer: 可注入的 tracer；为空时从全局观测入口获取。
+        """
         super().__init__()
         if tracer is None:
             try:

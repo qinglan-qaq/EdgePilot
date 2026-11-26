@@ -70,6 +70,17 @@ class SpanHandle:
         return self
 
     def finish(self, status: str = "succeeded") -> None:
+        """结束 span：一次性投递 span.close（含全部子记录）并恢复父 span。
+
+        关键节点：
+            1. 只有 running 状态可以结束，重复调用直接忽略，避免双写终态；
+            2. span.close 携带 llm_calls / tool_calls / retrievals / events，
+               由 writer 在落库时级联写入；
+            3. 结束后把上下文恢复到父 span，否则顺序关闭的兄弟 span 会挂错父子。
+
+        Args:
+            status: 终态，succeeded / failed / timeout / cancelled / waiting_approval。
+        """
         if self._status != "running":
             return
         self._status = status
@@ -156,6 +167,16 @@ class TraceHandle:
         return self
 
     def close(self, status: str = "succeeded") -> None:
+        """结束 trace：投递 trace.close，并把上下文还给外层。
+
+        关键节点：
+            1. 只有 running 可以关闭，重复调用直接忽略；
+            2. writer 收到 trace.close 后用 SQL 聚合 span/token/cost 统计；
+            3. 关闭后恢复外层 trace/span，支持嵌套 trace 与 worker 复用上下文。
+
+        Args:
+            status: 终态，succeeded / failed / timeout / cancelled。
+        """
         if self._status != "running":
             return
         self._status = status

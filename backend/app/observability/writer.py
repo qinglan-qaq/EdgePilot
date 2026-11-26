@@ -147,11 +147,38 @@ def _sub_values(record: Any, *, tenant_id, span_id: str, attempt: int,
 
 
 class BatchWriter:
+    """把采集队列的一批记录写入 traces / spans / 子记录表。
+
+    关键节点：
+        1. 整批共用一个事务，任何一条失败都由 collector 统一重试；
+        2. span.close 会级联写入 llm_calls / tool_calls / retrievals / events；
+        3. 事务提交后才推 Redis 实时层，实时层失败只记 debug，不影响落库。
+    """
+
     def __init__(self, session_factory, live: LiveLayer | None = None):
+        """初始化批量写入器。
+
+        Args:
+            session_factory: 异步 SQLAlchemy session 工厂。
+            live: Redis 实时层；为 None 时不推送实时状态。
+        """
         self._session_factory = session_factory
         self._live = live
 
     async def write(self, records: list[dict]) -> None:
+        """在单个事务内写完整批记录，成功后再推送实时层。
+
+        关键节点：
+            1. 空批直接返回，避免无意义的事务；
+            2. 事务内逐条 dispatch，保证 trace 头先于 span 落库的顺序由上游保证；
+            3. 提交成功后才 publish_many，实时层异常被吞掉，不影响已落库数据。
+
+        Args:
+            records: collector 攒好的一批观测记录。
+
+        Raises:
+            Exception: 落库失败时原样向上抛，交由 collector 重试。
+        """
         if not records:
             return
         async with self._session_factory() as s:
@@ -165,6 +192,14 @@ class BatchWriter:
                 logger.debug("obs live publish failed", exc_info=True)
 
     async def _dispatch(self, s, record: dict) -> None:
+        """按记录类型分派到具体写入方法。
+
+        关键节点：未知 kind 只记 debug 并跳过，避免一条脏记录毒化整批。
+
+        Args:
+            s: 当前事务内的异步 session。
+            record: 单条观测记录，``kind`` 决定写入目标。
+        """
         kind = record.get("kind")
         if kind == "trace.start":
             await self._trace_start(s, record)
@@ -221,6 +256,17 @@ class BatchWriter:
         await s.execute(stmt)
 
     async def _span_close(self, s, record: dict) -> None:
+        """结束一条 span：upsert 主行，并级联写入本次产生的子记录。
+
+        关键节点：
+            1. span.open 与 span.close 都可能先到，因此用 upsert 而不是 update；
+            2. 子记录不携带 tenant/span/trace，由本方法从所属 span 注入；
+            3. events 的 sequence_number 在 trace 内单调递增，供前端排序。
+
+        Args:
+            s: 当前事务内的异步 session。
+            record: ``kind=span.close`` 的观测记录。
+        """
         tenant_id = record["tenant_id"]
         span_id = record["span_id"]
         attempt = record.get("attempt") or 1
@@ -277,6 +323,20 @@ class BatchWriter:
         )
 
     async def _trace_close(self, s, record: dict) -> None:
+        """结束一条 trace，并用聚合 SQL 回填 spans/tokens/cost 统计。
+
+        关键节点：
+            1. 状态、输出、时长来自 trace.close 记录本身；
+            2. span 数、错误数、token、cost 由子表实时聚合，
+               避免运行期维护冗余计数导致不一致；
+            3. cost 为 NULL 的条数单独记入 cost_unavailable_count，
+               用来区分“成本为 0”和“供应商未上报”；
+            4. 根 span 若仍是 running，在这里补关，防止终态 trace 残留运行中节点。
+
+        Args:
+            s: 当前事务内的异步 session。
+            record: ``kind=trace.close`` 的观测记录。
+        """
         end_time = _end_time(record.get("start_time"), record.get("duration_ms"))
         stmt = text("""
             UPDATE traces t SET

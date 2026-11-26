@@ -192,7 +192,16 @@ class TraceContext:
 
 
 def trace_context_from_current() -> TraceContext | None:
-    """只从当前 ``contextvars`` 读取；无活动 trace 时返回 ``None``。"""
+    """只从当前 ``contextvars`` 读取；无活动 trace 时返回 ``None``。
+
+    关键节点：
+        1. Trace ID 必须是合法的 32 位十六进制，NullTrace / 空上下文不猜测；
+        2. parent span 必须属于同一条 trace，否则丢弃，避免跨 trace 挂错；
+        3. 租户与采集模式一并带上，跨进程后仍按原租户与原模式落库。
+
+    Returns:
+        TraceContext；没有有效 trace 时为 None。
+    """
     trace = obs_context.current_trace.get()
     trace_id = getattr(trace, "trace_id", None)
     if not is_valid_trace_id(trace_id):
@@ -238,7 +247,14 @@ def trace_context_from_current() -> TraceContext | None:
 
 
 def trace_payload_from_current() -> dict[str, Any] | None:
-    """构造 Celery 注入用 payload；无活动 trace 时返回 ``None``。"""
+    """构造 Celery 注入用 payload；无活动 trace 时返回 ``None``。
+
+    关键节点：无 trace 时不传 ``__trace__``，保持既有任务载荷不变，
+    避免 worker 端误判为“有上下文需要恢复”。
+
+    Returns:
+        可 JSON 序列化的 trace 上下文；无活动 trace 时为 None。
+    """
     ctx = trace_context_from_current()
     return ctx.to_payload() if ctx is not None else None
 

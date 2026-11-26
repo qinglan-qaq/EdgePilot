@@ -59,7 +59,20 @@ async def stream_trace_events(
 ) -> AsyncIterator[str]:
     """先补发 PG 中的历史事件，再转发 Redis 实时消息。
 
-    15 秒无消息产出心跳；收到 ``trace.close`` 后以 done 事件收尾。
+    关键节点：
+        1. 用 Last-Event-ID 从 PG 补发断点之后的历史事件，支持刷新续传；
+        2. 订阅本 trace 的 Redis 频道后转为 SSE，实时事件与历史事件同格式；
+        3. 15 秒无消息产出心跳，避免代理层判定连接空闲；
+        4. 收到 ``trace.close`` 后发 done 并结束，前端可据此停止重连。
+
+    Args:
+        session_factory: 异步 session 工厂，用于读取历史事件。
+        pubsub: Redis pubsub 连接，用于订阅实时频道。
+        trace_id: 要订阅的 Trace ID。
+        last_event_id: 客户端已收到的最大序号；为空表示从头补发。
+
+    Yields:
+        已格式化好的 SSE 文本行（data / ping / done）。
     """
     tenant_id = get_tenant_id()
     channel = f"obs:{trace_id}"

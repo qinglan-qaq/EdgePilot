@@ -48,7 +48,21 @@ def _scrub(text: str) -> str:
 
 
 def redact_record(record: dict, mode: str) -> dict:
-    """只在记录内容层面工作：kind/ids/tenant_id/时间戳/计数永远原样保留。"""
+    """按采集模式裁剪一条观测记录的内容字段。
+
+    关键节点：
+        1. FULL 原样返回，只有生产显式开启且具备权限时才应使用；
+        2. METADATA 把 BODY_FIELDS 全部置 None，只保留结构、ID 与计数；
+        3. REDACTED 递归脱敏敏感键与文本中的凭据/手机号/身份证号；
+        4. kind/ids/tenant_id/时间戳/计数永远原样保留，保证链路可关联。
+
+    Args:
+        record: 待写入的观测记录。
+        mode: 已解析的采集模式。
+
+    Returns:
+        脱敏后的新记录；FULL 模式返回原对象。
+    """
     if mode == "FULL":
         return record
     if mode == "METADATA":
