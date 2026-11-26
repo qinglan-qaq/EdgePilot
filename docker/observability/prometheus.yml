@@ -1,0 +1,13 @@
+# EdgePilot 观测栈 Prometheus 配置（P7 Task 27）。
+# 指标由 backend 的 prometheus_client 暴露在 /metrics（见 app/core/metrics.py），
+# 标签基数受控，这里只需单个静态抓取目标。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: edgepilot-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]

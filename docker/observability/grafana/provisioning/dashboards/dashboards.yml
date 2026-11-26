@@ -1,0 +1,13 @@
+# Grafana dashboard provisioning：容器内路径 /var/lib/grafana/dashboards。
+apiVersion: 1
+
+providers:
+  - name: edgepilot
+    orgId: 1
+    folder: EdgePilot
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

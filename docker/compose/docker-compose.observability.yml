@@ -1,0 +1,44 @@
+name: edgepilot
+
+# 可观测 overlay（P7 Task 27）。与 base 组合使用：
+#
+#   docker compose -f docker/compose/docker-compose.yml \
+#                  -f docker/compose/docker-compose.observability.yml \
+#                  --profile observability --profile app up -d
+#
+# 只启动 Prometheus + Grafana；它们加入 base compose 的默认网络，
+# 通过服务名 api 抓取 /metrics。
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle=false
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # 部署时通过 GRAFANA_ADMIN_PASSWORD 覆盖；默认值只用于本地演示。
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-edgepilot}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  grafana_data:
