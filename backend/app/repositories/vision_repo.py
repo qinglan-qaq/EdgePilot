@@ -45,6 +45,19 @@ class VisionRepo:
             stmt = stmt.with_for_update()
         return await self.session.scalar(stmt)
 
+    async def get_task_by_uid(self, task_uid: str) -> VisionTask | None:
+        """按 task_uid 跨租户查找，仅供媒体签名路由解析任务租户。
+
+        签名 URL 的 token 自带租户绑定，路由拿到任务后再用 ``verify_media_token``
+        校验；这里不做鉴权，绝不提供给业务查询使用。
+        """
+        return await self.session.scalar(
+            select(VisionTask)
+            .where(VisionTask.task_uid == task_uid)
+            .order_by(VisionTask.id)
+            .limit(1)
+        )
+
     async def get_by_dedup(self, tenant_id: uuid.UUID, dedup_key: str) -> VisionTask | None:
         return await self.session.scalar(
             select(VisionTask).where(
@@ -66,12 +79,18 @@ class VisionRepo:
         size: int,
         status: str | None = None,
         query: str | None = None,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
     ) -> tuple[list[tuple[VisionTask, VisionResult | None]], int]:
         conditions = [VisionTask.tenant_id == tenant_id]
         if status:
             conditions.append(VisionTask.status == status)
         if query:
             conditions.append(VisionTask.video_filename.ilike(f"%{query}%"))
+        if created_after is not None:
+            conditions.append(VisionTask.created_at >= created_after)
+        if created_before is not None:
+            conditions.append(VisionTask.created_at <= created_before)
 
         total = (
             await self.session.scalar(
@@ -282,6 +301,7 @@ class VisionRepo:
                     func.count(VisionTask.id),
                     func.count(VisionTask.id).filter(VisionTask.status == "completed"),
                     func.count(VisionTask.id).filter(VisionTask.status == "failed"),
+                    func.count(VisionTask.id).filter(VisionTask.status == "running"),
                     func.coalesce(func.sum(VisionTask.processed_frames), 0),
                     func.coalesce(func.sum(VisionTask.detection_count), 0),
                 ).where(VisionTask.tenant_id == tenant_id)
@@ -307,8 +327,9 @@ class VisionRepo:
             "total_tasks": int(task_row[0] or 0),
             "completed": int(task_row[1] or 0),
             "failed": int(task_row[2] or 0),
-            "processed_frames": int(task_row[3] or 0),
-            "detection_count": int(task_row[4] or 0),
+            "running": int(task_row[3] or 0),
+            "processed_frames": int(task_row[4] or 0),
+            "detection_count": int(task_row[5] or 0),
             "event_count": int(event_count or 0),
             "recent": list(recent),
         }
